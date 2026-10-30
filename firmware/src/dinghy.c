@@ -16,6 +16,10 @@
 static void app_idle(void);
 #define LCD_IDLE app_idle                       /* while the screen's DMA runs: MIDI in (platform.c) */
 #include "platform.c"
+#ifdef DINGHY_HOST
+#define FM1_TICKS_PER_US 24u
+static uint32_t fm1_ticks(void) { return 0; }   /* (no counter on the computer: the meter reads 0) */
+#endif
 #include "polivoks.c"
 #include "polivoks_fx.c"
 
@@ -31,6 +35,7 @@ static event_t ring[RING];
 static volatile uint8_t ev_head, ev_tail, ready;
 static uint32_t bank_store[POLIVOKS_BANK_BYTES / 4];
 static int32_t mono[POLIVOKS_FRAMES], left[POLIVOKS_FRAMES], right[POLIVOKS_FRAMES];
+static volatile uint32_t dsp_peak;               /* the longest audio block since the main loop last looked, in us */
 static uint8_t val[NPARAM];                     /* the values on the panel */
 
 static void push(uint8_t type, uint8_t a, uint8_t b, int16_t value)
@@ -49,7 +54,7 @@ static void apply(unsigned p, unsigned v)       /* ISR side */
 static void app_audio(int32_t *out, uint32_t n)
 {
     polivoks_bank_t *bank = (polivoks_bank_t *)bank_store;
-    uint32_t i, blk;
+    uint32_t i, blk, t0 = fm1_ticks(), dt;
     if (!ready) return;
     while (ev_tail != ev_head) {
         const event_t *e = &ring[ev_tail];
@@ -73,6 +78,8 @@ static void app_audio(int32_t *out, uint32_t n)
             out[2u * (blk + i) + 1u] += right[i] >> 8;
         }
     }
+    dt = (uint32_t)(fm1_ticks() - t0) / FM1_TICKS_PER_US;
+    if (dt > dsp_peak) dsp_peak = dt;
 }
 
 /* ---- parameters: names, ranges, defaults */
@@ -187,7 +194,7 @@ static void app_idle(void)
 
 static void app_main(void)
 {
-    uint32_t prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
+    uint32_t t_dsp = 0, dsp_drawn = ~0u, prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
     uint8_t held[27] = {0};
     uint8_t drawn[4];
     polivoks_bank_t *bank = (polivoks_bank_t *)bank_store;
@@ -249,10 +256,18 @@ static void app_main(void)
         fm1_led_key(BTN_OCT_UP, oct > 0);
 
         idle_ok = 1;
-        if (page != page_drawn) { page_drawn = page; draw_page(page); for (k = 0; k < 4u; k++) drawn[k] = 0xFF; status_drawn = ~0u; }
+        if (page != page_drawn) { page_drawn = page; draw_page(page); for (k = 0; k < 4u; k++) drawn[k] = 0xFF; status_drawn = ~0u; dsp_drawn = ~0u; }
         for (k = 0; k < 4u; k++)
             if (drawn[k] != val[page * 4u + k] || ((uint32_t)drawn[k] == 0xFFu)) { drawn[k] = val[page * 4u + k]; draw_row(k, page * 4u + k); }
         if ((st = (uint32_t)(oct + 2) | (uint32_t)set.ch << 4 | midi_src << 12) != status_drawn) { status_drawn = st; draw_status(oct, set.ch, midi_src); }
+        if (fm1_ms - t_dsp > 1000u) {            /* the DSP load: the longest block against its 5.8 ms */
+            uint32_t us = dsp_peak, pc = us * 100u / 5805u;
+            char d[16] = "DSP ";
+            dsp_peak = 0; t_dsp = fm1_ms;
+            put_num(d + 4, pc > 999u ? 999u : pc);
+            { char *q = d; while (*q) q++; *q++ = '%'; *q = 0; }
+            if (pc != dsp_drawn) { dsp_drawn = pc; draw_text_box(0, 192, 240, &FONT_S, d, pc > 70u ? C_ACC : C_GREY, 1); }
+        }
         idle_ok = 0;
 
         if (dirty && fm1_ms - t_change > 2000u) {   /* 2 s after the change (an erase stalls the sound; the echo may ring, a short click is possible) */
