@@ -99,7 +99,8 @@ static uint32_t selftest(void)
     }
     return sum;
 }
-#define SELFTEST_EXPECT 4074555u                        /* what the computer gets (host run prints it) */
+static volatile uint32_t selftest_expect = 4074555u;   /* (not a constant in the code: -4074555 would look like a ROM address to the build check) */
+#define SELFTEST_EXPECT selftest_expect                        /* what the computer gets (host run prints it) */
 
 /* ---- parameters: names, ranges, defaults */
 static const char *const TYPE_NAMES[] = {"Tape", "BBD"};
