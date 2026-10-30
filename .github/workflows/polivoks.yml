@@ -1,0 +1,59 @@
+# Polivoks on Dinghy: build the FM-1 firmware, run the host sequence, publish the package as a pre-release.
+# Diagnostics go out as annotations (the job log is not always readable).
+name: polivoks
+
+on:
+  push:
+    branches: [polivoks-duophonic]
+  workflow_dispatch:
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: python3 -m pip install Pillow
+      - name: JieLi toolchain
+        run: sh tools/get_toolchain.sh
+      - name: JieLi AC79 SDK
+        run: |
+          for i in 1 2 3; do
+            git clone --depth 1 --branch AC79NN_SDK_V1.2.1_2023-12-13 \
+                https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK.git ~/fw-AC79_AIoT_SDK && break
+            rm -rf ~/fw-AC79_AIoT_SDK
+            sleep 20
+          done
+          test -d ~/fw-AC79_AIoT_SDK
+      - name: Build the FM-1 firmware
+        id: build
+        run: |
+          set +e
+          sh build.sh > build.log 2>&1
+          rc=$?
+          msg=$(tail -n 40 build.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          if [ $rc -ne 0 ]; then echo "::error title=build failed::$msg"; exit 1; fi
+          echo "::notice title=build::$msg"
+      - name: Host run (screens and sound)
+        run: |
+          mkdir -p build/host
+          gcc -O2 -Wall -Wno-unused-function -DDINGHY_HOST -DAPP_VER='"host"' -Ifirmware/hal -Ifirmware/src -Ifirmware/gen \
+              -o build/host/dinghy firmware/src/dinghy.c -lm 2>&1 | head -20
+          build/host/dinghy build/host/dinghy tests/polivoks.txt | tail -5
+      - name: Publish the package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l build/*.fwsc
+          cp build/dinghy.fwsc polivoks-dinghy.fwsc
+          gh release delete polivoks-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create polivoks-latest polivoks-dinghy.fwsc --prerelease \
+              --title "Polivoks on Dinghy (latest build)" --notes "Built from ${GITHUB_SHA}" --target "${GITHUB_SHA}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polivoks-dinghy
+          path: build/dinghy.fwsc

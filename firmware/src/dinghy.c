@@ -1,176 +1,165 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* Dinghy: the smallest FM-1 firmware to build your own on. A sine wave on the keys, and that is all.
- * This is the file to change. Everything below it (platform.c) is done: updates, the USB rescue,
- * MIDI (USB, the TRS jack), USB audio, keys, knobs, LEDs, the screen, flash storage; the FM-1 and the SMK-37.
+/* Polivoks for the M-VAVE FM-1: a duophonic Formanta Polivoks-style voice with a tape / BBD echo and a spring
+ * reverb, on the Dinghy platform (platform.c: updates, USB rescue, USB-MIDI, keys, knobs, screen, flash).
  *
- *   keys       play sines, 4 voices; the notes go out over USB-MIDI too, on the MIDI channel
+ *   keys       play the voice (two notes at once: the newest two held notes sound)
+ *   SELECT     the page (nine: filter, oscillators, amp envelope, filter envelope, LFO, loop / mix,
+ *              echo, echo 2, spring)
+ *   KNOB 1-4   the four values of the page
  *   OCT- OCT+  the octave (kept in flash)
- *   PRESETS    the MIDI channel: OMNI (in: all, out: 1) or 1..16 (kept in flash)
+ *   PRESETS    the MIDI channel: OMNI or 1..16 (kept in flash)
  *   MASTER     the volume (platform.c)
- *   MIDI in    notes from USB or the TRS jack play the sines, with their velocity; a MIDI clock shows its tempo
- *              and blinks PLAY on the beat, START / STOP light it
- *   SMK-37     the keys with velocity, the outer keys too, the pads (white keys F3..G5, lit while they sound), the
- *              pitch wheel bends +-2 semitones
+ *   MIDI in    notes, pitch bend, mod wheel (CC1), sustain (CC64), all-notes-off (CC123)
  *
- * Rules of the road (the chip has no FPU and no libgcc): integers only, no float, no 64-bit division.
- * tests/host.c runs this file on a computer: the screen as a PNG, the sound as a WAV.
- * What platform.c offers: docs/API.md. The chip's rules: docs/RULES.md. */
+ * The voice (polivoks.c) and the effects (polivoks_fx.c) are float DSP: the build asks for the FM-1's float
+ * hardware (-mfprev1, tools/build.py). tests/host.c runs this file on a computer. */
 static void app_idle(void);
 #define LCD_IDLE app_idle                       /* while the screen's DMA runs: MIDI in (platform.c) */
 #include "platform.c"
-#if BOARD_SMK37
-#include "smk_wheel.h"
-#endif
+#include "polivoks.c"
+#include "polivoks_fx.c"
 
-/* ---- the sound (runs in the audio ISR: keep it short, no flash, no screen) */
-#define NV 4u                                   /* voices */
-static struct {
-    volatile uint32_t inc;                      /* phase step per frame: f * 2^32 / 44100 (unbent) */
-    volatile int32_t gate;                      /* target level, Q15: 0 = released */
-    int32_t amp;                                /* the level now: glides to gate, no clicks */
-    uint32_t ph, age;
-    uint8_t note;
-} voice[NV];
-static volatile uint32_t bend_q16 = 65536;      /* the pitch wheel: the steps times this / 65536 */
+#define NVOICEPARAM POLIVOKS_NPARAMS
+#define NPARAM (POLIVOKS_NPARAMS + POLIVOKS_FX_PARAMS)
+#define NPAGE (NPARAM / 4)
 
-static int32_t sine(uint32_t ph)                /* a full cycle over 2^32 -> -32767..32767 (a refined parabola, ~0.1 %) */
+/* ---- the sound (audio ISR): events from the main loop, one writer each side */
+enum { EV_NOTE, EV_PEDAL, EV_BEND, EV_MOD, EV_PARAM, EV_PANIC };
+typedef struct { uint8_t type, a, b, pad; int16_t value; } event_t;
+enum { RING = 64 };
+static event_t ring[RING];
+static volatile uint8_t ev_head, ev_tail, ready;
+static uint32_t bank_store[POLIVOKS_BANK_BYTES / 4];
+static int32_t mono[POLIVOKS_FRAMES], left[POLIVOKS_FRAMES], right[POLIVOKS_FRAMES];
+static uint8_t val[NPARAM];                     /* the values on the panel */
+
+static void push(uint8_t type, uint8_t a, uint8_t b, int16_t value)
 {
-    int32_t x = (int32_t)ph >> 16, ax = x < 0 ? -x : x, y, ay;
-    y = (x * (32768 - ax)) >> 13;               /* 4x(1-|x|), Q15 */
-    ay = y < 0 ? -y : y;
-    y += ((((y * ay) >> 15) - y) * 7373) >> 15; /* + 0.225 (y|y| - y) */
-    return y > 32767 ? 32767 : y < -32767 ? -32767 : y;
+    uint8_t next = (uint8_t)((ev_head + 1u) % RING);
+    if (next == ev_tail) return;                /* full: drop, never wait */
+    ring[ev_head].type = type; ring[ev_head].a = a; ring[ev_head].b = b; ring[ev_head].value = value;
+    ev_head = next;
+}
+static void apply(unsigned p, unsigned v)       /* ISR side */
+{
+    if (p < NVOICEPARAM) polivoks_bank_set((polivoks_bank_t *)bank_store, p, v);
+    else polivoks_fx_set(p - NVOICEPARAM, v);
 }
 
 static void app_audio(int32_t *out, uint32_t n)
 {
-    uint32_t v, i;
-    for (v = 0; v < NV; v++) {
-        uint32_t ph = voice[v].ph, step = (uint32_t)(((uint64_t)voice[v].inc * bend_q16) >> 16);   /* (int64 multiply: fine) */
-        int32_t amp = voice[v].amp, g = voice[v].gate;
-        if (!amp && !g)
-            continue;                           /* silent: costs nothing */
-        for (i = 0; i < n; i++) {
-            int32_t s;
-            if (amp < g) { amp += 48; if (amp > g) amp = g; }        /* attack ~5 ms */
-            else if (amp > g) { amp -= 6; if (amp < g) amp = g; }    /* release ~45 ms */
-            ph += step;
-            s = (sine(ph) * amp) >> 15;
-            out[2u * i] += s;                   /* L */
-            out[2u * i + 1u] += s;              /* R */
+    polivoks_bank_t *bank = (polivoks_bank_t *)bank_store;
+    uint32_t i, blk;
+    if (!ready) return;
+    while (ev_tail != ev_head) {
+        const event_t *e = &ring[ev_tail];
+        switch (e->type) {
+        case EV_NOTE: polivoks_bank_note(bank, e->a, e->b, 0); break;
+        case EV_PEDAL: polivoks_bank_pedal(bank, e->a); break;
+        case EV_BEND: polivoks_bank_bend(bank, (int32_t)e->value * 16); break;   /* +-2 semitones */
+        case EV_MOD: polivoks_bank_mod(bank, e->a); break;
+        case EV_PARAM: apply(e->a, e->b); break;
+        default: polivoks_bank_panic(bank); break;
         }
-        voice[v].ph = ph;
-        voice[v].amp = amp;
+        ev_tail = (uint8_t)((ev_tail + 1u) % RING);
     }
+    for (blk = 0; blk + POLIVOKS_FRAMES <= n; blk += POLIVOKS_FRAMES) {
+        for (i = 0; i < POLIVOKS_FRAMES; i++) mono[i] = 0;
+        polivoks_bank_render(bank, mono);
+        for (i = 0; i < POLIVOKS_FRAMES; i++) left[i] = right[i] = mono[i];
+        polivoks_fx_process(mono, left, right);
+        for (i = 0; i < POLIVOKS_FRAMES; i++) {   /* Q23 -> Q15 */
+            out[2u * (blk + i)] += left[i] >> 8;
+            out[2u * (blk + i) + 1u] += right[i] >> 8;
+        }
+    }
+}
+
+/* ---- parameters: names, ranges, defaults */
+static const char *const TYPE_NAMES[] = {"Tape", "BBD"};
+static const fm1_param_t FXP[POLIVOKS_FX_PARAMS] = {
+    {"Time", 127, 0, 0}, {"Feedbk", 127, 0, 0}, {"Tone", 127, 0, 0}, {"Echo", 127, 0, 0},
+    {"Type", 1, 0, TYPE_NAMES}, {"Wobble", 127, 0, 0}, {"Satur", 127, 0, 0}, {"Width", 127, 0, 0},
+    {"Decay", 127, 0, 0}, {"Tone", 127, 0, 0}, {"Drip", 127, 0, 0}, {"Spring", 127, 0, 0}};
+static const fm1_param_t *param(unsigned p)
+{
+    return p < NVOICEPARAM ? polivoks_param((int)p) : &FXP[p - NVOICEPARAM];
+}
+static const char *const PAGE_NAME[NPAGE] = {"FILTER", "OSCILLATORS", "AMP ENVELOPE", "FILTER ENV", "LFO",
+                                             "LOOP AND MIX", "ECHO", "ECHO TYPE", "SPRING"};
+
+static void set_param(unsigned p, unsigned v)   /* main loop */
+{
+    const fm1_param_t *d = param(p);
+    if (v > d->max) v = d->max;
+    val[p] = (uint8_t)v;
+    push(EV_PARAM, (uint8_t)p, (uint8_t)v, 0);
+}
+static void defaults(void)
+{
+    unsigned p;
+    for (p = 0; p < NVOICEPARAM; p++) val[p] = polivoks_param((int)p)->def;
+    for (p = 0; p < POLIVOKS_FX_PARAMS; p++) val[NVOICEPARAM + p] = polivoks_fx_default[p];
 }
 
 /* ---- notes (main loop) */
-static const uint32_t INC_C9[12] = {            /* MIDI 120..131 (C9..B9); lower octaves shift right */
-    815363807u, 863847862u, 915214929u, 969636441u, 1027294024u, 1088380105u,
-    1153098554u, 1221665363u, 1294309365u, 1371273005u, 1452813141u, 1539201906u};
-static uint32_t ages, last_note = 255;
-
+static uint32_t last_note = 255;
 static void play(uint32_t note, uint32_t vel)
 {
-    uint32_t v, pick = 0, best = 0xFFFFFFFFu;
     if (note > 127u || !vel) return;
-    for (v = 0; v < NV; v++) {                  /* the same note, else a free voice, else the oldest */
-        uint32_t score = voice[v].note == note && voice[v].gate ? 0u
-                       : voice[v].gate ? 0x80000000u + voice[v].age : (uint32_t)voice[v].amp + 1u;
-        if (score < best) { best = score; pick = v; }
-    }
-    voice[pick].note = (uint8_t)note;
-    voice[pick].age = ++ages;
-    voice[pick].inc = INC_C9[note % 12u] >> (10u - note / 12u);
-    voice[pick].gate = (int32_t)(vel * 90u);    /* 127 -> 11430: four voices stay under full scale */
+    push(EV_NOTE, (uint8_t)note, (uint8_t)vel, 0);
     last_note = note;
 }
-static void stop(uint32_t note)
-{
-    uint32_t v;
-    for (v = 0; v < NV; v++)
-        if (voice[v].note == note)
-            voice[v].gate = 0;
-}
-static int quiet(void)                          /* nothing sounds, not even a release */
-{
-    uint32_t v;
-    for (v = 0; v < NV; v++)
-        if (voice[v].gate || voice[v].amp) return 0;
-    return 1;
-}
+static void stop(uint32_t note) { if (note <= 127u) push(EV_NOTE, (uint8_t)note, 0, 0); }
 
-/* ---- the screen: the name, the last note big, the keyboard with what sounds, the octave */
-#define C_ACC RGB(180, 140, 255)                /* lilac, as the logo */
-#define C_KEY RGB(210, 210, 210)
-#define C_OFF RGB(90, 90, 90)
+/* ---- the screen */
+#define C_ACC RGB(255, 150, 60)                 /* the Polivoks' amber */
+#define C_GREY RGB(90, 90, 90)
+#define C_TRACK RGB(40, 40, 40)
 #define KEY0 53u                                /* key 0 = F3 */
-static int black(uint32_t note) { return (0x54Au >> (note % 12u)) & 1u; }
 
-static void draw_note(void)
+static void put_num(char *s, uint32_t v)
 {
-    static const char *const NAME[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
-    char s[8] = "-";
-    if (last_note < 128u) {
-        const char *p = NAME[last_note % 12u];
-        uint32_t i = 0;
-        while (*p) s[i++] = *p++;
-        if (last_note >= 12u) s[i++] = (char)('0' + last_note / 12u - 1u);
-        s[i] = 0;
-    }
-    draw_text_box(0, 82, 240, &FONT_L, s, C_WHITE, 1);
+    uint32_t i = 0;
+    if (v >= 100u) s[i++] = (char)('0' + v / 100u);
+    if (v >= 10u) s[i++] = (char)('0' + v / 10u % 10u);
+    s[i++] = (char)('0' + v % 10u);
+    s[i] = 0;
 }
-
-static void draw_keys(uint32_t lit)             /* bit k: key k sounds */
+static void draw_row(unsigned row, unsigned p)
 {
-    uint32_t k, w = 0;
-    cv_begin(240, 56, C_BLACK);
-    for (k = 0; k < 27u; k++)                   /* 16 white keys of 14 px from x = 8 */
-        if (!black(KEY0 + k)) {
-            cv_rect(8 + (int32_t)w * 14, 0, 13, 56, lit >> k & 1u ? C_ACC : C_KEY);
-            w++;
-        }
-    for (k = 0, w = 0; k < 27u; k++)            /* the black ones on the line between two white */
-        if (black(KEY0 + k))
-            cv_rect(8 + (int32_t)w * 14 - 5, 0, 9, 34, lit >> k & 1u ? C_ACC : C_BLACK);
-        else
-            w++;
-    cv_blit(0, 140);
+    const fm1_param_t *d = param(p);
+    char s[16];
+    int32_t y = 70 + (int32_t)row * 36;
+    if (d->names) { const char *n = d->names[val[p]]; uint32_t i = 0; while (n[i] && i < 15u) { s[i] = n[i]; i++; } s[i] = 0; }
+    else put_num(s, val[p]);
+    draw_text_box(8, y, 100, &FONT_S, d->name, C_GREY, 0);
+    draw_text_box(112, y, 120, &FONT_S, s, C_WHITE, 2);
+    lcd_fill(8, y + 20, 224, 6, C_TRACK);
+    lcd_fill(8, y + 20, (uint32_t)val[p] * 224u / (d->max ? d->max : 1u), 6, C_ACC);
 }
-
-static void draw_status(int32_t oct, uint32_t ch)
+static void draw_page(unsigned page)
 {
-    char s[24] = "OCT +0  MIDI OMNI";
+    char s[8] = "1/9";
+    lcd_fill(0, 0, 240, 240, C_BLACK);
+    draw_text_box(0, 8, 240, &FONT_L, PAGE_NAME[page], C_ACC, 1);
+    s[0] = (char)('1' + page);
+    draw_text_box(0, 44, 240, &FONT_S, s, C_GREY, 1);
+}
+static void draw_status(int32_t oct, uint32_t ch, uint32_t src)
+{
+    char s[32] = "OCT +0  MIDI OMNI";
     s[4] = oct < 0 ? '-' : '+';
     s[5] = (char)('0' + (oct < 0 ? -oct : oct));
-    if (ch) {
-        s[13] = 'C'; s[14] = 'H'; s[15] = (char)(ch < 10u ? ' ' : '1'); s[16] = (char)('0' + ch % 10u);
-    }
-    draw_text_box(0, 212, 240, &FONT_S, s, C_OFF, 1);
-}
-
-static void draw_midi(uint32_t src, uint32_t bpm, uint32_t running)   /* where notes came from last, the clock */
-{
-    char s[32] = "", *p = s;
-    const char *a = src == 2u ? "TRS IN" : src == 1u ? "USB IN" : "";
-    while (*a) *p++ = *a++;
-    if (bpm) {
-        if (p != s) { *p++ = ' '; *p++ = ' '; }
-        a = running ? "CLOCK " : "clock ";
-        while (*a) *p++ = *a++;
-        if (bpm >= 100u) *p++ = (char)('0' + bpm / 100u);
-        *p++ = (char)('0' + bpm / 10u % 10u);
-        *p++ = (char)('0' + bpm % 10u);
-        a = " BPM";
-        while (*a) *p++ = *a++;
-    }
-    *p = 0;
-    draw_text_box(0, 120, 240, &FONT_S, s, C_OFF, 1);
+    if (ch) { s[13] = 'C'; s[14] = 'H'; s[15] = (char)(ch < 10u ? ' ' : '1'); s[16] = (char)('0' + ch % 10u); }
+    if (src) { s[17] = ' '; s[18] = ' '; s[19] = 'U'; s[20] = src == 2u ? 'A' : 'S'; s[21] = src == 2u ? 'R' : 'B'; s[22] = src == 2u ? 'T' : 0; s[23] = 0; }
+    draw_text_box(0, 216, 240, &FONT_S, s, C_GREY, 1);
 }
 
 /* ---- MIDI in: from the main loop, and from app_idle while the screen draws (idle_ok) */
-static struct { uint8_t oct, ch; } set = {0, 0};   /* what survives a power-off (add yours, up to SECTOR_MAX bytes) */
-static uint32_t idle_ok, midi_src, clk_n, clk_t0, clk_bpm, clk_run, clk_beat_ms;
+typedef struct { uint8_t magic, page, oct, ch; uint8_t p[NPARAM]; } settings_t;
+static settings_t set = {0xA5, 0, 0, 0, {0}};
+static uint32_t idle_ok, midi_src;
 
 static void midi_in(void)
 {
@@ -178,24 +167,17 @@ static void midi_in(void)
     int src;
     while ((src = midi_get(&st, &d1, &d2)) != 0) {   /* 1 USB, 2 the TRS jack */
         uint32_t ty = st & 0xF0u;
-        if (st == 0xF8u) {                      /* clock: 24 a quarter note */
-            if (clk_n % 24u == 0u) {
-                if (clk_n) {
-                    uint32_t ms = fm1_ms - clk_t0;   /* a quarter's length */
-                    clk_bpm = ms ? (60000u + ms / 2u) / ms : 0;
-                }
-                clk_t0 = fm1_ms;
-                clk_beat_ms = fm1_ms;
-            }
-            clk_n++;
-            continue;
-        }
-        if (st == 0xFAu) { clk_run = 1; clk_n = 0; continue; }   /* START: the next clock is beat 1 */
-        if (st == 0xFBu) { clk_run = 1; continue; }              /* CONTINUE */
-        if (st == 0xFCu) { clk_run = 0; continue; }              /* STOP */
-        if (set.ch && (st & 15u) != set.ch - 1u) continue;      /* not our channel */
-        if (ty == 0x90u && d2) { play(d1, d2); midi_src = (uint32_t)src; }
+        if (st >= 0xF0u) continue;                  /* clock and transport: not used */
+        if (set.ch && (st & 15u) != set.ch - 1u) continue;
+        midi_src = (uint32_t)src;
+        if (ty == 0x90u && d2) play(d1, d2);
         else if (ty == 0x80u || ty == 0x90u) stop(d1);
+        else if (ty == 0xE0u) push(EV_BEND, 0, 0, (int16_t)((int)d1 + ((int)d2 << 7) - 8192));
+        else if (ty == 0xB0u) {
+            if (d1 == 1u) push(EV_MOD, d2, 0, 0);
+            else if (d1 == 64u) push(EV_PEDAL, d2 >= 64u, 0, 0);
+            else if (d1 == 120u || d1 == 123u) push(EV_PANIC, 0, 0, 0);
+        }
     }
 }
 static void app_idle(void)
@@ -205,99 +187,76 @@ static void app_idle(void)
 
 static void app_main(void)
 {
-    uint32_t prev = 0, k, t_change = 0, dirty = 0, lit_drawn = ~0u, note_drawn = ~0u, status_drawn = ~0u;
-    uint32_t midi_drawn = ~0u;
-    uint8_t held[27] = {0};                     /* the note each key plays */
-#if BOARD_SMK37
-    static const uint8_t WHITE[16] = {0, 2, 4, 6, 7, 9, 11, 12, 14, 16, 18, 19, 21, 23, 24, 26};   /* white key -> key */
-    uint8_t pad_note[16] = {0}, ext_note[FM1_NKEY] = {0};
-    smk_pw_t wheel = {0};
-    smk_pad_events = 1;                         /* the pads as events (smk_pad_take): they play here, lit while they sound */
-#endif
-    if (settings_load(&set, sizeof set) || (int8_t)set.oct < -2 || (int8_t)set.oct > 2 || set.ch > 16u)
-        set.oct = 0, set.ch = 0;
+    uint32_t prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
+    uint8_t held[27] = {0};
+    uint8_t drawn[4];
+    polivoks_bank_t *bank = (polivoks_bank_t *)bank_store;
 
-    lcd_fill(0, 0, 240, 240, C_BLACK);
-    draw_text_box(0, 18, 240, &FONT_L, APP_NAME, C_ACC, 1);
-    draw_text_box(0, 52, 240, &FONT_S, "a sine to build on  v" APP_VER, C_OFF, 1);
+    defaults();
+    if (settings_load(&set, sizeof set) || set.magic != 0xA5 || (int8_t)set.oct < -2 || (int8_t)set.oct > 2 || set.ch > 16u || set.page >= NPAGE) {
+        set.magic = 0xA5; set.page = 0; set.oct = 0; set.ch = 0;
+    } else {
+        for (p = 0; p < NPARAM; p++) if (set.p[p] <= param(p)->max) val[p] = set.p[p];
+    }
+    polivoks_bank_init(bank);                   /* before the audio interrupt may touch them */
+    polivoks_fx_reset();
+    for (p = 0; p < NPARAM; p++) apply(p, val[p]);
+    ready = 1;
 
     for (;;) {
-        uint32_t keys, down, up, rel, b, lit = 0, out_ch = set.ch ? set.ch - 1u : 0u, st;
+        uint32_t keys, down, up, rel, b, out_ch = set.ch ? set.ch - 1u : 0u, st, page = set.page;
         int32_t oct = (int8_t)set.oct, e;
         uint32_t base = (uint32_t)((int32_t)KEY0 + 12 * oct);
         platform_poll();
 
-        keys = fm1_in.notes;                    /* bit k: key k (0 = F3 .. 26 = G5) */
+        keys = fm1_in.notes;
         down = keys & ~prev;
         up = prev & ~keys;
         prev = keys;
-        for (k = 0; k < 27u; k++) {                 /* (a key stops the note it started: the octave may change meanwhile) */
-#if BOARD_SMK37
-            uint32_t vel = fm1_in.key_vel[SMK_KEY_F3 + k];   /* the SMK's keys feel the velocity */
-#else
-            uint32_t vel = 100;
-#endif
-            if (down >> k & 1u) { held[k] = (uint8_t)(base + k); play(held[k], vel); midi_send(0x90u | out_ch, held[k], vel); }
+        for (k = 0; k < 27u; k++) {
+            if (down >> k & 1u) { held[k] = (uint8_t)(base + k); play(held[k], 100); midi_send(0x90u | out_ch, held[k], 100); }
             if (up >> k & 1u) { stop(held[k]); midi_send(0x80u | out_ch, held[k], 0); }
         }
-#if BOARD_SMK37
-        while ((e = smk_extkey_take()) >= 0) {  /* the keys left and right of the FM-1's 27: key << 8 | velocity */
-            uint32_t key = (uint32_t)e >> 8, vel = (uint32_t)e & 0x7Fu;
-            if (key >= FM1_NKEY) continue;
-            if (vel) { ext_note[key] = (uint8_t)(base + key - SMK_KEY_F3); play(ext_note[key], vel); midi_send(0x90u | out_ch, ext_note[key], vel); }
-            else if (ext_note[key]) { stop(ext_note[key]); midi_send(0x80u | out_ch, ext_note[key], 0); ext_note[key] = 0; }
-        }
-        while ((e = smk_pad_take()) >= 0) {     /* a pad: hardware pad << 8 | velocity (0 = let go) */
-            uint32_t pad = ((uint32_t)e >> 8) & 15u, vel = (uint32_t)e & 0x7Fu;
-            uint32_t w = pad < 8u ? pad + 8u : pad - 8u;   /* bottom row = white keys 1-8, top row 9-16 */
-            if (vel) { pad_note[pad] = (uint8_t)(base + WHITE[w]); play(pad_note[pad], vel); midi_send(0x90u | out_ch, pad_note[pad], vel); }
-            else if (pad_note[pad]) { stop(pad_note[pad]); midi_send(0x80u | out_ch, pad_note[pad], 0); pad_note[pad] = 0; }
-        }
-        {
-            int32_t bd = smk_pw_bend(&wheel, fm1_in.wheel[0], fm1_ms);   /* 1/4096 semitone */
-            bend_q16 = (uint32_t)(65536 + (bd * 3785 >> 12) + (((bd * bd) >> 12) * 109 >> 12));   /* ~2^(s/12) */
-        }
-#endif
 
-        b = fm1_input_edges(&rel);              /* buttons pressed since the last call (bit = button id) */
+        b = fm1_input_edges(&rel);
         if (b & (1u << BTN_OCT_DOWN) && oct > -2) { set.oct = (uint8_t)(oct - 1); dirty = 1; t_change = fm1_ms; }
         if (b & (1u << BTN_OCT_UP) && oct < 2) { set.oct = (uint8_t)(oct + 1); dirty = 1; t_change = fm1_ms; }
-        if ((e = fm1_enc_take(ENC_PRESETS)) != 0) {   /* detents turned since the last call */
+        if ((e = fm1_enc_take(ENC_PRESETS)) != 0) {
             int32_t c = (int32_t)set.ch + e;
             set.ch = (uint8_t)(c < 0 ? 0 : c > 16 ? 16 : c);
-            dirty = 1;
-            t_change = fm1_ms;
+            dirty = 1; t_change = fm1_ms;
+        }
+        if ((e = fm1_enc_take(ENC_SELECT)) != 0) {
+            int32_t c = (int32_t)page + (e > 0 ? 1 : -1);
+            page = (uint32_t)(c < 0 ? NPAGE - 1 : c >= (int32_t)NPAGE ? 0 : c);
+            set.page = (uint8_t)page;
+            dirty = 1; t_change = fm1_ms;
+        }
+        for (k = 0; k < 4u; k++) {
+            if ((e = fm1_enc_take(ENC_KNOB1 + k)) != 0) {
+                unsigned q = page * 4u + k;
+                int32_t step = (e > 2 || e < -2) ? e * 6 : e * 2;
+                int32_t v = (int32_t)val[q] + (param(q)->max == 1 ? (e > 0 ? 1 : -1) : step);
+                v = v < 0 ? 0 : v > (int32_t)param(q)->max ? (int32_t)param(q)->max : v;
+                if ((uint32_t)v != val[q]) { set_param(q, (unsigned)v); dirty = 1; t_change = fm1_ms; }
+            }
         }
 
         midi_in();
-        if (clk_bpm && fm1_ms - clk_t0 > 2000u) clk_bpm = 0, clk_run = 0;   /* the clock has stopped coming */
 
-        oct = (int8_t)set.oct;
-        base = (uint32_t)((int32_t)KEY0 + 12 * oct);
-        for (k = 0; k < NV; k++)                /* what sounds, on the keys of this octave */
-            if (voice[k].gate && voice[k].note >= base && voice[k].note < base + 27u)
-                lit |= 1u << (voice[k].note - base);
-        for (k = 0; k < 27u; k++)
-            fm1_led_key(KEY_LED(k), lit >> k & 1u);
+        for (k = 0; k < 27u; k++) fm1_led_key(KEY_LED(k), keys >> k & 1u);
         fm1_led_key(BTN_OCT_DOWN, oct < 0);
         fm1_led_key(BTN_OCT_UP, oct > 0);
-        fm1_led_key(BTN_PLAY, clk_run || (clk_bpm && fm1_ms - clk_beat_ms < 80u));   /* lit: running; a blink a beat */
-#if BOARD_SMK37
-        for (k = 0; k < 16u; k++) {             /* a pad glows lilac while its key sounds */
-            uint32_t w = k < 8u ? k + 8u : k - 8u, on = lit >> WHITE[w] & 1u;
-            padled_set(k, on ? 90 : 4, on ? 60 : 2, on ? 128 : 8);
-        }
-        padled_flush();                         /* (sends only what changed) */
-#endif
 
-        idle_ok = 1;                            /* the drawing below may read MIDI meanwhile (LCD_IDLE) */
-        if (lit != lit_drawn) { lit_drawn = lit; draw_keys(lit); }   /* redraw only what changed */
-        if (last_note != note_drawn) { note_drawn = last_note; draw_note(); }
-        if ((st = (uint32_t)(oct + 2) | (uint32_t)set.ch << 4) != status_drawn) { status_drawn = st; draw_status(oct, set.ch); }
-        if ((st = midi_src | clk_bpm << 2 | clk_run << 12) != midi_drawn) { midi_drawn = st; draw_midi(midi_src, clk_bpm, clk_run); }
+        idle_ok = 1;
+        if (page != page_drawn) { page_drawn = page; draw_page(page); for (k = 0; k < 4u; k++) drawn[k] = 0xFF; status_drawn = ~0u; }
+        for (k = 0; k < 4u; k++)
+            if (drawn[k] != val[page * 4u + k] || ((uint32_t)drawn[k] == 0xFFu)) { drawn[k] = val[page * 4u + k]; draw_row(k, page * 4u + k); }
+        if ((st = (uint32_t)(oct + 2) | (uint32_t)set.ch << 4 | midi_src << 12) != status_drawn) { status_drawn = st; draw_status(oct, set.ch, midi_src); }
         idle_ok = 0;
 
-        if (dirty && quiet() && fm1_ms - t_change > 2000u) {   /* 2 s after the change, when silent (an erase stalls the sound) */
+        if (dirty && fm1_ms - t_change > 2000u) {   /* 2 s after the change (an erase stalls the sound; the echo may ring, a short click is possible) */
+            for (p = 0; p < NPARAM; p++) set.p[p] = val[p];
             settings_save(&set, sizeof set);
             dirty = 0;
         }
