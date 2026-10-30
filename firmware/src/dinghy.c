@@ -221,6 +221,7 @@ static void app_main(void)
     uint32_t self, t_dsp = 0, dsp_drawn = ~0u, prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
     uint8_t held[27] = {0};
     uint8_t drawn[4];
+    uint32_t knob_t[4] = {0, 0, 0, 0};
     polivoks_bank_t *bank = (polivoks_bank_t *)bank_store;
 
     defaults();
@@ -285,7 +286,12 @@ static void app_main(void)
                 unsigned q = page * 4u + k, mx = param(q)->max;
                 int32_t v, ae = e < 0 ? -e : e, step;
                 if (mx <= 8u) step = e > 0 ? 1 : -1;                   /* a choice: one detent, one choice */
-                else step = e * (ae >= 3 ? 12 : ae == 2 ? 9 : 6);      /* ~1 turn for the whole range, faster when spun */
+                else {                                                  /* by speed: slow = 1 a click, spun = up to 8 */
+                    uint32_t dt = fm1_ms - knob_t[k], m = dt > 160u ? 1u : dt > 90u ? 2u : dt > 45u ? 4u : 8u;
+                    if (ae >= 2) m = m < 4u ? 4u : 8u;
+                    step = e * (int32_t)m;
+                }
+                knob_t[k] = fm1_ms;
                 v = (int32_t)val[q] + step;
                 v = v < 0 ? 0 : v > (int32_t)mx ? (int32_t)mx : v;
                 if ((uint32_t)v != val[q]) { set_param(q, (unsigned)v); dirty = 1; t_change = fm1_ms; }
