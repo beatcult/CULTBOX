@@ -38,6 +38,10 @@ jobs:
           msg=$(tail -n 40 build.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
           if [ $rc -ne 0 ]; then echo "::error title=build failed::$msg"; exit 1; fi
           echo "::notice title=build::$msg"
+      - name: Floating point check (helper calls in the disassembly)
+        run: |
+          calls=$(grep -oE "call [^ ]*__[a-z0-9_]+" build/dinghy.dis | sort | uniq -c | sort -rn | head -8 | tr '\n' ';')
+          echo "::notice title=helper calls::${calls:-none}"
       - name: Host run (screens and sound)
         run: |
           mkdir -p build/host

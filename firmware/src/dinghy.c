@@ -82,6 +82,25 @@ static void app_audio(int32_t *out, uint32_t n)
     if (dt > dsp_peak) dsp_peak = dt;
 }
 
+/* ---- float self-test: a fixed note through a scratch voice bank; the sum of the output must match the computer's */
+static char self_msg[40];
+static uint32_t scratch[POLIVOKS_BANK_BYTES / 4], test_out[POLIVOKS_FRAMES];
+static uint32_t selftest(void)
+{
+    polivoks_bank_t *b = (polivoks_bank_t *)scratch;
+    int32_t *o = (int32_t *)test_out;
+    uint32_t sum = 0, blk, i;
+    polivoks_bank_init(b);
+    polivoks_bank_note(b, 57, 100, 0);
+    for (blk = 0; blk < 40u; blk++) {
+        for (i = 0; i < POLIVOKS_FRAMES; i++) o[i] = 0;
+        polivoks_bank_render(b, o);
+        for (i = 0; i < POLIVOKS_FRAMES; i++) sum += (uint32_t)((o[i] < 0 ? -o[i] : o[i]) >> 10);
+    }
+    return sum;
+}
+#define SELFTEST_EXPECT 4074555u                        /* what the computer gets (host run prints it) */
+
 /* ---- parameters: names, ranges, defaults */
 static const char *const TYPE_NAMES[] = {"Tape", "BBD"};
 static const fm1_param_t FXP[POLIVOKS_FX_PARAMS] = {
@@ -125,6 +144,13 @@ static void stop(uint32_t note) { if (note <= 127u) push(EV_NOTE, (uint8_t)note,
 #define C_TRACK RGB(40, 40, 40)
 #define KEY0 53u                                /* key 0 = F3 */
 
+static void put_big(char *s, uint32_t v)
+{
+    char r[11]; uint32_t n = 0, i = 0;
+    do { r[n++] = (char)('0' + v % 10u); v /= 10u; } while (v);
+    while (n) s[i++] = r[--n];
+    s[i] = 0;
+}
 static void put_num(char *s, uint32_t v)
 {
     uint32_t i = 0;
@@ -194,7 +220,7 @@ static void app_idle(void)
 
 static void app_main(void)
 {
-    uint32_t t_dsp = 0, dsp_drawn = ~0u, prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
+    uint32_t self, t_dsp = 0, dsp_drawn = ~0u, prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
     uint8_t held[27] = {0};
     uint8_t drawn[4];
     polivoks_bank_t *bank = (polivoks_bank_t *)bank_store;
@@ -205,11 +231,28 @@ static void app_main(void)
     } else {
         for (p = 0; p < NPARAM; p++) if (set.p[p] <= param(p)->max) val[p] = set.p[p];
     }
+    self = selftest();
+#ifdef DINGHY_HOST
+    printf("selftest %u\n", (unsigned)self);
+#endif
     polivoks_bank_init(bank);                   /* before the audio interrupt may touch them */
     polivoks_fx_reset();
     for (p = 0; p < NPARAM; p++) apply(p, val[p]);
     ready = 1;
 
+    {
+        char t[40] = "FLOAT ", *q = t + 6;
+        uint32_t d = self > SELFTEST_EXPECT ? self - SELFTEST_EXPECT : SELFTEST_EXPECT - self;
+        const char *w = d * 50u <= SELFTEST_EXPECT ? "OK " : "BAD ";
+        while (*w) *q++ = *w++;
+        put_big(q, self);
+        for (q = t; *q; q++) ;
+        (void)q;
+        {
+            uint32_t n; for (n = 0; t[n] && n < 39u; n++) self_msg[n] = t[n];
+            self_msg[n] = 0;
+        }
+    }
     for (;;) {
         uint32_t keys, down, up, rel, b, out_ch = set.ch ? set.ch - 1u : 0u, st, page = set.page;
         int32_t oct = (int8_t)set.oct, e;
@@ -241,12 +284,20 @@ static void app_main(void)
         }
         for (k = 0; k < 4u; k++) {
             if ((e = fm1_enc_take(ENC_KNOB1 + k)) != 0) {
-                unsigned q = page * 4u + k;
-                int32_t step = (e > 2 || e < -2) ? e * 6 : e * 2;
-                int32_t v = (int32_t)val[q] + (param(q)->max == 1 ? (e > 0 ? 1 : -1) : step);
-                v = v < 0 ? 0 : v > (int32_t)param(q)->max ? (int32_t)param(q)->max : v;
+                unsigned q = page * 4u + k, mx = param(q)->max;
+                int32_t v, ae = e < 0 ? -e : e, step;
+                if (mx <= 8u) step = e > 0 ? 1 : -1;                   /* a choice: one detent, one choice */
+                else step = e * (ae >= 3 ? 12 : ae == 2 ? 9 : 6);      /* ~1 turn for the whole range, faster when spun */
+                v = (int32_t)val[q] + step;
+                v = v < 0 ? 0 : v > (int32_t)mx ? (int32_t)mx : v;
                 if ((uint32_t)v != val[q]) { set_param(q, (unsigned)v); dirty = 1; t_change = fm1_ms; }
             }
+        }
+        if (b & (1u << BTN_HOME)) {               /* HOME: every value back to the starting sound */
+            defaults();
+            for (p = 0; p < NPARAM; p++) push(EV_PARAM, (uint8_t)p, val[p], 0);
+            for (k = 0; k < 4u; k++) drawn[k] = 0xFF;
+            dirty = 1; t_change = fm1_ms;
         }
 
         midi_in();
@@ -256,7 +307,8 @@ static void app_main(void)
         fm1_led_key(BTN_OCT_UP, oct > 0);
 
         idle_ok = 1;
-        if (page != page_drawn) { page_drawn = page; draw_page(page); for (k = 0; k < 4u; k++) drawn[k] = 0xFF; status_drawn = ~0u; dsp_drawn = ~0u; }
+        if (page != page_drawn) { page_drawn = page; draw_page(page); for (k = 0; k < 4u; k++) drawn[k] = 0xFF; status_drawn = ~0u; dsp_drawn = ~0u;
+            draw_text_box(0, 170, 240, &FONT_S, self_msg, C_GREY, 1); }
         for (k = 0; k < 4u; k++)
             if (drawn[k] != val[page * 4u + k] || ((uint32_t)drawn[k] == 0xFFu)) { drawn[k] = val[page * 4u + k]; draw_row(k, page * 4u + k); }
         if ((st = (uint32_t)(oct + 2) | (uint32_t)set.ch << 4 | midi_src << 12) != status_drawn) { status_drawn = st; draw_status(oct, set.ch, midi_src); }
