@@ -4,6 +4,8 @@
  *
  *   keys       play the voice (two notes at once: the newest two held notes sound)
  *   SELECT     the page (nine: filter, oscillator 1, oscillator 2, amp envelope, filter envelope, LFO, mod and drive, play, BBD echo)
+ *   SEL EDIT ENV LFO GLO FX   jump to a section: filter / oscillators 1-2 / envelopes (amp, filter) / LFO (LFO, mod and drive) /
+ *              play / BBD echo; press again to step through that section's pages (its button is lit)
  *   HOME       every value back to the starting sound
  *   KNOB 1-4   the four values of the page
  *   OCT- OCT+  the octave (kept in flash)
@@ -217,6 +219,11 @@ static void app_idle(void)
     if (idle_ok) midi_in();
 }
 
+/* the panel's section buttons: the first page of the section and how many pages it has */
+static const struct { uint8_t btn, first, count; } SECTION[] = {
+    {BTN_SEL, 0, 1}, {BTN_EDIT, 1, 2}, {BTN_ENV, 3, 2}, {BTN_LFO, 5, 2}, {BTN_GLO, 7, 1}, {BTN_FX, 8, 1}};
+#define NSECTION (sizeof SECTION / sizeof SECTION[0])
+
 static void app_main(void)
 {
     uint32_t self, t_dsp = 0, dsp_drawn = ~0u, prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
@@ -296,6 +303,13 @@ static void app_main(void)
                 if ((uint32_t)v != val[q]) { set_param(q, (unsigned)v); dirty = 1; t_change = fm1_ms; }
             }
         }
+        for (k = 0; k < NSECTION; k++)
+            if (b & (1u << SECTION[k].btn)) {
+                uint32_t f = SECTION[k].first, n = SECTION[k].count;
+                page = (page >= f && page < f + n) ? f + (page - f + 1u) % n : f;
+                set.page = (uint8_t)page;
+                dirty = 1; t_change = fm1_ms;
+            }
         if (b & (1u << BTN_HOME)) {               /* HOME: every value back to the starting sound */
             defaults();
             for (p = 0; p < NPARAM; p++) push(EV_PARAM, (uint8_t)p, val[p], 0);
@@ -306,6 +320,8 @@ static void app_main(void)
         midi_in();
 
         for (k = 0; k < 27u; k++) fm1_led_key(KEY_LED(k), keys >> k & 1u);
+        for (k = 0; k < NSECTION; k++)
+            fm1_led_key(SECTION[k].btn, page >= SECTION[k].first && page < SECTION[k].first + SECTION[k].count);
         fm1_led_key(BTN_OCT_DOWN, oct < 0);
         fm1_led_key(BTN_OCT_UP, oct > 0);
 

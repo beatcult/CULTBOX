@@ -1,0 +1,10 @@
+200 btn 4
+400 btn 4
+600 btn 5
+800 btn 5
+1000 btn 2
+1200 btn 7
+1400 btn 3
+1600 btn 6
+1800 shot
+end 2000
