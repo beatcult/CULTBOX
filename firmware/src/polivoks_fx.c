@@ -5,13 +5,13 @@
 #define HALF 22050.0f
 #define Q23 8388608.0f
 #define BLOCK 128
-enum { DLY_N = 16384, DLY_MASK = DLY_N - 1 };
+enum { DLY_N = 32768, DLY_MASK = DLY_N - 1 };      /* 1.49 s at the half rate */
+static int16_t fx_buf[DLY_N] __attribute__((section(".pool")));   /* the pool: big buffers, zeroed at boot */
 
-const uint8_t polivoks_fx_default[POLIVOKS_FX_PARAMS] = {/* time */ 68, /* feed */ 62, /* tone */ 60, /* mix */ 0};
+const uint8_t polivoks_fx_default[POLIVOKS_FX_PARAMS] = {/* time */ 48, /* feed */ 62, /* tone */ 60, /* mix */ 0};
 
 static struct {
     uint8_t pot[POLIVOKS_FX_PARAMS];
-    int16_t buf[DLY_N];
     unsigned wr;
     float len, len_target, fb, lp_a, lp1, lp2, hp_x, hp_y, mix;
     float wow_phase, noise_slow, prev_l, prev_r;
@@ -56,7 +56,7 @@ static void fx_derive(void)
 {
     const uint8_t *p = fx.pot;
     float u = p[FX_DLY_TIME] * (1.0f / 127.0f);
-    float ms = 19.0f * fx_exp2f_(u * 4.2f);        /* 19 .. 350 ms */
+    float ms = 19.0f * fx_exp2f_(u * 5.9f);        /* 19 ms .. 1.1 s */
     fx.len_target = fx_clampf(ms * 0.001f * HALF, 8.0f, (float)(DLY_N - 16) / 1.5f);
     fx.fb = p[FX_DLY_FEED] * (1.0f / 127.0f) * 1.08f;   /* a little over unity: the saturation holds it */
     u = p[FX_DLY_TONE] * (1.0f / 127.0f);
@@ -74,6 +74,7 @@ void polivoks_fx_reset(void)
 {
     uint8_t *raw = (uint8_t *)&fx;
     for (unsigned i = 0; i < sizeof fx; ++i) raw[i] = 0;
+    for (unsigned i = 0; i < DLY_N; ++i) fx_buf[i] = 0;
     fx.rng = 0x1234567u;
     for (unsigned i = 0; i < POLIVOKS_FX_PARAMS; ++i) fx.pot[i] = polivoks_fx_default[i];
     fx_derive();
@@ -86,7 +87,7 @@ static inline float fx_tap(float len)
     if (rp < 0.0f) rp += (float)DLY_N;
     unsigned i0 = (unsigned)rp & DLY_MASK;
     float f = rp - (float)(int)rp;
-    float a = (float)fx.buf[i0], b = (float)fx.buf[(i0 + 1U) & DLY_MASK];
+    float a = (float)fx_buf[i0], b = (float)fx_buf[(i0 + 1U) & DLY_MASK];
     return (a + f * (b - a)) * (1.0f / 32768.0f);
 }
 void polivoks_fx_process(const int32_t *in, int32_t *left, int32_t *right)
@@ -112,7 +113,7 @@ void polivoks_fx_process(const int32_t *in, int32_t *left, int32_t *right)
         fx.lp2 += (fx.lp1 - fx.lp2) * fx.lp_a; fx.lp2 = fx_flush(fx.lp2);
         float loop = fx_sat(fx.lp2 * 2.2f) * (1.0f / 2.2f) * fx.fb;
         float dc = loop - fx.hp_x + 0.995f * fx.hp_y; fx.hp_x = loop; fx.hp_y = fx_flush(dc); loop = fx.hp_y;
-        fx.buf[fx.wr] = (int16_t)(fx_clampf(x + loop, -0.999f, 0.999f) * 32767.0f);
+        fx_buf[fx.wr] = (int16_t)(fx_clampf(x + loop, -0.999f, 0.999f) * 32767.0f);
         fx.wr = (fx.wr + 1U) & DLY_MASK;
 
         float wl = mix * tl, wr = mix * tr;                       /* up to full rate, linear */
