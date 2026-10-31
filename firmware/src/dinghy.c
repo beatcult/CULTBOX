@@ -161,7 +161,7 @@ static void draw_row(unsigned row, unsigned p)
 {
     const fm1_param_t *d = param(p);
     char s[16];
-    int32_t y = 70 + (int32_t)row * 36;
+    int32_t y = 66 + (int32_t)row * 34;
     if (d->names) { const char *n = d->names[val[p]]; uint32_t i = 0; while (n[i] && i < 15u) { s[i] = n[i]; i++; } s[i] = 0; }
     else put_num(s, val[p]);
     draw_text_box(8, y, 100, &FONT_S, d->name, C_GREY, 0);
@@ -185,7 +185,7 @@ static void draw_status(int32_t oct, uint32_t ch, uint32_t src)
     s[5] = (char)('0' + (oct < 0 ? -oct : oct));
     if (ch) { s[13] = 'C'; s[14] = 'H'; s[15] = (char)(ch < 10u ? ' ' : '1'); s[16] = (char)('0' + ch % 10u); }
     if (src) { s[17] = ' '; s[18] = ' '; s[19] = 'U'; s[20] = src == 2u ? 'A' : 'S'; s[21] = src == 2u ? 'R' : 'B'; s[22] = src == 2u ? 'T' : 0; s[23] = 0; }
-    draw_text_box(0, 216, 240, &FONT_S, s, C_GREY, 1);
+    draw_text_box(0, 220, 240, &FONT_S, s, C_GREY, 1);
 }
 
 /* ---- MIDI in: from the main loop, and from app_idle while the screen draws (idle_ok) */
@@ -245,9 +245,7 @@ static void app_main(void)
         uint32_t d = self > SELFTEST_EXPECT ? self - SELFTEST_EXPECT : SELFTEST_EXPECT - self;
         const char *w = d * 50u <= SELFTEST_EXPECT ? "OK " : "BAD ";
         while (*w) *q++ = *w++;
-        put_big(q, self);
-        for (q = t; *q; q++) ;
-        (void)q;
+        if (*(q - 2) != 'K') put_big(q, self); else q[-1] = 0;
         {
             uint32_t n; for (n = 0; t[n] && n < 39u; n++) self_msg[n] = t[n];
             self_msg[n] = 0;
@@ -313,17 +311,21 @@ static void app_main(void)
 
         idle_ok = 1;
         if (page != page_drawn) { page_drawn = page; draw_page(page); for (k = 0; k < 4u; k++) drawn[k] = 0xFF; status_drawn = ~0u; dsp_drawn = ~0u;
-            draw_text_box(0, 170, 240, &FONT_S, self_msg, C_GREY, 1); }
+ }
         for (k = 0; k < 4u; k++)
             if (drawn[k] != val[page * 4u + k] || ((uint32_t)drawn[k] == 0xFFu)) { drawn[k] = val[page * 4u + k]; draw_row(k, page * 4u + k); }
         if ((st = (uint32_t)(oct + 2) | (uint32_t)set.ch << 4 | midi_src << 12) != status_drawn) { status_drawn = st; draw_status(oct, set.ch, midi_src); }
         if (fm1_ms - t_dsp > 1000u) {            /* the DSP load: the longest block against its 5.8 ms */
             uint32_t us = dsp_peak, pc = us * 100u / 5805u;
-            char d[16] = "DSP ";
+            char d[64];
+            uint32_t n = 0, m;
             dsp_peak = 0; t_dsp = fm1_ms;
-            put_num(d + 4, pc > 999u ? 999u : pc);
-            { char *q = d; while (*q) q++; *q++ = '%'; *q = 0; }
-            if (pc != dsp_drawn) { dsp_drawn = pc; draw_text_box(0, 192, 240, &FONT_S, d, pc > 70u ? C_ACC : C_GREY, 1); }
+            for (m = 0; self_msg[m]; m++) d[n++] = self_msg[m];
+            d[n++] = ' '; d[n++] = ' '; d[n++] = 'D'; d[n++] = 'S'; d[n++] = 'P'; d[n++] = ' ';
+            put_num(d + n, pc > 999u ? 999u : pc);
+            while (d[n]) n++;
+            d[n++] = '%'; d[n] = 0;
+            if (pc != dsp_drawn) { dsp_drawn = pc; draw_text_box(0, 198, 240, &FONT_S, d, pc > 70u ? C_ACC : C_GREY, 1); }
         }
         idle_ok = 0;
 
