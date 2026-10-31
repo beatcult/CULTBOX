@@ -9,7 +9,10 @@
  *   HOME       every value back to the starting sound
  *   KNOB 1-4   the four values of the page
  *   OCT- OCT+  the octave (kept in flash)
- *   PRESETS    the MIDI channel: OMNI or 1..16 (kept in flash)
+ *   PRESETS    the preset: F1..F12 (factory), U1..U16 (yours); loaded as you turn; * marks an edited sound
+ *   SAVE       store the sound in the selected user slot (from a factory preset: the next free slot)
+ *   ALGORITHM  the MIDI channel: OMNI or 1..16 (kept in flash)
+ *   MIDI       program change selects a preset
  *   MASTER     the volume (platform.c)
  *   MIDI in    notes, pitch bend, mod wheel (CC1), sustain (CC64), all-notes-off (CC123)
  *
@@ -24,6 +27,7 @@ static uint32_t fm1_ticks(void) { return 0; }   /* (no counter on the computer: 
 #endif
 #include "polivoks.c"
 #include "polivoks_fx.c"
+#include "presets.h"
 
 #define NVOICEPARAM POLIVOKS_NPARAMS
 #define NPARAM (POLIVOKS_NPARAMS + POLIVOKS_FX_PARAMS)
@@ -32,7 +36,7 @@ static uint32_t fm1_ticks(void) { return 0; }   /* (no counter on the computer: 
 /* ---- the sound (audio ISR): events from the main loop, one writer each side */
 enum { EV_NOTE, EV_PEDAL, EV_BEND, EV_MOD, EV_PARAM, EV_PANIC };
 typedef struct { uint8_t type, a, b, pad; int16_t value; } event_t;
-enum { RING = 64 };
+enum { RING = 128 };
 static event_t ring[RING];
 static volatile uint8_t ev_head, ev_tail, ready;
 static uint32_t bank_store[POLIVOKS_BANK_BYTES / 4];
@@ -128,6 +132,49 @@ static void defaults(void)
     for (p = 0; p < POLIVOKS_FX_PARAMS; p++) val[NVOICEPARAM + p] = polivoks_fx_default[p];
 }
 
+/* ---- presets: NFACTORY in the code, NUSER in flash (blob 0, one sector: saved on SAVE) */
+#define NUSER 16u
+#define NPRESET (NFACTORY + NUSER)
+static struct { uint8_t used[NUSER]; uint8_t p[NUSER][NPARAM]; } ubank;
+static volatile uint32_t cur, modified, ui_reset;
+static char msg[16];
+static uint32_t msg_until;
+
+static void load_preset(uint32_t i)             /* main loop, or MIDI program change */
+{
+    unsigned p;
+    if (i >= NPRESET) return;
+    if (i < NFACTORY) for (p = 0; p < NPARAM; p++) val[p] = FACTORY[i][p];
+    else if (ubank.used[i - NFACTORY]) for (p = 0; p < NPARAM; p++) val[p] = ubank.p[i - NFACTORY][p];
+    else defaults();
+    for (p = 0; p < NPARAM; p++) {
+        if (val[p] > param(p)->max) val[p] = param(p)->max;
+        push(EV_PARAM, (uint8_t)p, val[p], 0);
+    }
+    cur = i; modified = 0; ui_reset = 1; msg_until = 0;
+}
+static void say(const char *s, uint32_t ms)
+{
+    uint32_t n = 0;
+    while (s[n] && n < 15u) { msg[n] = s[n]; n++; }
+    msg[n] = 0;
+    msg_until = fm1_ms + ms;
+}
+static void save_preset(void)                   /* SAVE: into the selected user slot, or the next free one */
+{
+    uint32_t slot = NUSER, k;
+    char t[16] = "SAVED U";
+    if (cur >= NFACTORY) slot = cur - NFACTORY;
+    else for (k = 0; k < NUSER; k++) if (!ubank.used[k]) { slot = k; break; }
+    if (slot >= NUSER) { say("BANK FULL", 1500); return; }
+    for (k = 0; k < NPARAM; k++) ubank.p[slot][k] = val[k];
+    ubank.used[slot] = 1;
+    if (blob_save(0, &ubank, sizeof ubank)) { say("SAVE FAILED", 2000); return; }
+    cur = NFACTORY + slot; modified = 0;
+    t[7] = (char)('0' + (slot + 1u) / 10u); t[8] = (char)('0' + (slot + 1u) % 10u); t[9] = 0;
+    say(t, 1500);
+}
+
 /* ---- notes (main loop) */
 static uint32_t last_note = 255;
 static void play(uint32_t note, uint32_t vel)
@@ -178,7 +225,30 @@ static void draw_page(unsigned page)
     draw_text_box(0, 8, 240, &FONT_L, PAGE_NAME[page], C_ACC, 1);
     s[0] = (char)('1' + page);
     s[2] = (char)('0' + NPAGE);
-    draw_text_box(0, 44, 240, &FONT_S, s, C_GREY, 1);
+    draw_text_box(190, 44, 50, &FONT_S, s, C_GREY, 2);
+}
+static void draw_preset(void)
+{
+    char t[32];
+    uint32_t n = 0, i = cur;
+    if (fm1_ms < msg_until) {
+        while (msg[n]) { t[n] = msg[n]; n++; }
+        t[n] = 0;
+        draw_text_box(0, 44, 190, &FONT_S, t, C_ACC, 0);
+        return;
+    }
+    if (i < NFACTORY) {
+        const char *nm = FACTORY_NAME[i];
+        t[n++] = 'F'; if (i + 1u >= 10u) t[n++] = (char)('0' + (i + 1u) / 10u); t[n++] = (char)('0' + (i + 1u) % 10u); t[n++] = ' ';
+        while (*nm && n < 28u) t[n++] = *nm++;
+    } else {
+        uint32_t u = i - NFACTORY + 1u;
+        t[n++] = 'U'; t[n++] = (char)('0' + u / 10u); t[n++] = (char)('0' + u % 10u);
+        if (!ubank.used[u - 1u]) { const char *e = " EMPTY"; while (*e) t[n++] = *e++; }
+    }
+    if (modified) t[n++] = '*';
+    t[n] = 0;
+    draw_text_box(0, 44, 190, &FONT_S, t, C_GREY, 0);
 }
 static void draw_status(int32_t oct, uint32_t ch, uint32_t src)
 {
@@ -191,8 +261,8 @@ static void draw_status(int32_t oct, uint32_t ch, uint32_t src)
 }
 
 /* ---- MIDI in: from the main loop, and from app_idle while the screen draws (idle_ok) */
-typedef struct { uint8_t magic, page, oct, ch; uint8_t p[NPARAM]; } settings_t;
-static settings_t set = {0xA7, 0, 0, 0, {0}};
+typedef struct { uint8_t magic, page, oct, ch, preset; uint8_t p[NPARAM]; } settings_t;
+static settings_t set = {0xA8, 0, 0, 0, 0, {0}};
 static uint32_t idle_ok, midi_src;
 
 static void midi_in(void)
@@ -206,6 +276,7 @@ static void midi_in(void)
         midi_src = (uint32_t)src;
         if (ty == 0x90u && d2) play(d1, d2);
         else if (ty == 0x80u || ty == 0x90u) stop(d1);
+        else if (ty == 0xC0u) load_preset(d1);
         else if (ty == 0xE0u) push(EV_BEND, 0, 0, (int16_t)((int)d1 + ((int)d2 << 7) - 8192));
         else if (ty == 0xB0u) {
             if (d1 == 1u) push(EV_MOD, d2, 0, 0);
@@ -226,18 +297,20 @@ static const struct { uint8_t btn, first, count; } SECTION[] = {
 
 static void app_main(void)
 {
-    uint32_t self, t_dsp = 0, dsp_drawn = ~0u, prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
+    uint32_t pl_sig = ~0u, self, t_dsp = 0, dsp_drawn = ~0u, prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
     uint8_t held[27] = {0};
     uint8_t drawn[4];
     uint32_t knob_t[4] = {0, 0, 0, 0};
     polivoks_bank_t *bank = (polivoks_bank_t *)bank_store;
 
     defaults();
-    if (settings_load(&set, sizeof set) || set.magic != 0xA7 || (int8_t)set.oct < -2 || (int8_t)set.oct > 2 || set.ch > 16u || set.page >= NPAGE) {
-        set.magic = 0xA7; set.page = 0; set.oct = 0; set.ch = 0;
+    if (settings_load(&set, sizeof set) || set.magic != 0xA8 || (int8_t)set.oct < -2 || (int8_t)set.oct > 2 || set.ch > 16u || set.page >= NPAGE || set.preset >= NPRESET) {
+        set.magic = 0xA8; set.preset = 0; set.page = 0; set.oct = 0; set.ch = 0;
     } else {
         for (p = 0; p < NPARAM; p++) if (set.p[p] <= param(p)->max) val[p] = set.p[p];
     }
+    if (blob_load(0, &ubank, sizeof ubank)) { uint32_t z; uint8_t *r = (uint8_t *)&ubank; for (z = 0; z < sizeof ubank; z++) r[z] = 0; }
+    cur = set.preset;
     self = selftest();
 #ifdef DINGHY_HOST
     printf("selftest %u\n", (unsigned)self);
@@ -276,11 +349,17 @@ static void app_main(void)
         b = fm1_input_edges(&rel);
         if (b & (1u << BTN_OCT_DOWN) && oct > -2) { set.oct = (uint8_t)(oct - 1); dirty = 1; t_change = fm1_ms; }
         if (b & (1u << BTN_OCT_UP) && oct < 2) { set.oct = (uint8_t)(oct + 1); dirty = 1; t_change = fm1_ms; }
-        if ((e = fm1_enc_take(ENC_PRESETS)) != 0) {
+        if ((e = fm1_enc_take(ENC_ALGORITHM)) != 0) {      /* the MIDI channel: OMNI or 1..16 */
             int32_t c = (int32_t)set.ch + e;
             set.ch = (uint8_t)(c < 0 ? 0 : c > 16 ? 16 : c);
             dirty = 1; t_change = fm1_ms;
         }
+        if ((e = fm1_enc_take(ENC_PRESETS)) != 0) {        /* the preset: loaded as you turn */
+            int32_t c = (int32_t)cur + (e > 0 ? 1 : -1);
+            c = c < 0 ? 0 : c >= (int32_t)NPRESET ? (int32_t)NPRESET - 1 : c;
+            if ((uint32_t)c != cur) { load_preset((uint32_t)c); dirty = 1; t_change = fm1_ms; }
+        }
+        if (b & (1u << BTN_SAVE)) save_preset();
         if ((e = fm1_enc_take(ENC_SELECT)) != 0) {
             int32_t c = (int32_t)page + (e > 0 ? 1 : -1);
             page = (uint32_t)(c < 0 ? NPAGE - 1 : c >= (int32_t)NPAGE ? 0 : c);
@@ -300,7 +379,7 @@ static void app_main(void)
                 knob_t[k] = fm1_ms;
                 v = (int32_t)val[q] + step;
                 v = v < 0 ? 0 : v > (int32_t)mx ? (int32_t)mx : v;
-                if ((uint32_t)v != val[q]) { set_param(q, (unsigned)v); dirty = 1; t_change = fm1_ms; }
+                if ((uint32_t)v != val[q]) { set_param(q, (unsigned)v); modified = 1; dirty = 1; t_change = fm1_ms; }
             }
         }
         for (k = 0; k < NSECTION; k++)
@@ -314,10 +393,11 @@ static void app_main(void)
             defaults();
             for (p = 0; p < NPARAM; p++) push(EV_PARAM, (uint8_t)p, val[p], 0);
             for (k = 0; k < 4u; k++) drawn[k] = 0xFF;
-            dirty = 1; t_change = fm1_ms;
+            modified = 1; dirty = 1; t_change = fm1_ms;
         }
 
         midi_in();
+        if (ui_reset) { ui_reset = 0; for (k = 0; k < 4u; k++) drawn[k] = 0xFF; }
 
         for (k = 0; k < 27u; k++) fm1_led_key(KEY_LED(k), keys >> k & 1u);
         for (k = 0; k < NSECTION; k++)
@@ -326,8 +406,9 @@ static void app_main(void)
         fm1_led_key(BTN_OCT_UP, oct > 0);
 
         idle_ok = 1;
-        if (page != page_drawn) { page_drawn = page; draw_page(page); for (k = 0; k < 4u; k++) drawn[k] = 0xFF; status_drawn = ~0u; dsp_drawn = ~0u;
+        if (page != page_drawn) { page_drawn = page; draw_page(page); for (k = 0; k < 4u; k++) drawn[k] = 0xFF; status_drawn = ~0u; dsp_drawn = ~0u; pl_sig = ~0u;
  }
+        if ((st = cur | modified << 8 | (fm1_ms < msg_until ? 1u << 9 : 0u)) != pl_sig) { pl_sig = st; draw_preset(); }
         for (k = 0; k < 4u; k++)
             if (drawn[k] != val[page * 4u + k] || ((uint32_t)drawn[k] == 0xFFu)) { drawn[k] = val[page * 4u + k]; draw_row(k, page * 4u + k); }
         if ((st = (uint32_t)(oct + 2) | (uint32_t)set.ch << 4 | midi_src << 12) != status_drawn) { status_drawn = st; draw_status(oct, set.ch, midi_src); }
@@ -347,6 +428,7 @@ static void app_main(void)
 
         if (dirty && fm1_ms - t_change > 2000u) {   /* 2 s after the change (an erase stalls the sound; the echo may ring, a short click is possible) */
             for (p = 0; p < NPARAM; p++) set.p[p] = val[p];
+            set.preset = (uint8_t)cur;
             settings_save(&set, sizeof set);
             dirty = 0;
         }

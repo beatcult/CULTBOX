@@ -1,0 +1,14 @@
+200 enc 6 1
+400 shot
+600 enc 2 3
+800 shot
+1000 btn 9
+1200 shot
+2000 shot
+2200 midi 0xC0 4 0
+2400 enc 6 -1
+2500 shot
+2600 enc 6 9
+2800 shot
+3000 end
+end 3500
