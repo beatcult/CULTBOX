@@ -3,7 +3,7 @@
  * on the Dinghy platform (platform.c: updates, USB rescue, USB-MIDI, keys, knobs, screen, flash).
  *
  *   keys       play the voice (two notes at once: the newest two held notes sound)
- *   SELECT     the page (seven: filter, oscillators, amp envelope, filter envelope, LFO, loop / mix, BBD echo)
+ *   SELECT     the page (nine: filter, oscillator 1, oscillator 2, amp envelope, filter envelope, LFO, mod and drive, play, BBD echo)
  *   HOME       every value back to the starting sound
  *   KNOB 1-4   the four values of the page
  *   OCT- OCT+  the octave (kept in flash)
@@ -99,7 +99,7 @@ static uint32_t selftest(void)
     }
     return sum;
 }
-static volatile uint32_t selftest_expect = 4074555u;   /* (not a constant in the code: -4074555 would look like a ROM address to the build check) */
+static volatile uint32_t selftest_expect = 4571585u;   /* (not a constant in the code: -4571585 would look like a ROM address to the build check) */
 #define SELFTEST_EXPECT selftest_expect                        /* what the computer gets (host run prints it) */
 
 /* ---- parameters: names, ranges, defaults */
@@ -109,8 +109,8 @@ static const fm1_param_t *param(unsigned p)
 {
     return p < NVOICEPARAM ? polivoks_param((int)p) : &FXP[p - NVOICEPARAM];
 }
-static const char *const PAGE_NAME[NPAGE] = {"FILTER", "OSCILLATORS", "AMP ENVELOPE", "FILTER ENV", "LFO",
-                                             "LOOP AND MIX", "BBD ECHO"};
+static const char *const PAGE_NAME[NPAGE] = {"FILTER", "OSCILLATOR 1", "OSCILLATOR 2", "AMP ENVELOPE", "FILTER ENV",
+                                             "LFO", "MOD AND DRIVE", "PLAY", "BBD ECHO"};
 
 static void set_param(unsigned p, unsigned v)   /* main loop */
 {
@@ -171,10 +171,11 @@ static void draw_row(unsigned row, unsigned p)
 }
 static void draw_page(unsigned page)
 {
-    char s[8] = "1/7";
+    char s[8] = "1/9";
     lcd_fill(0, 0, 240, 240, C_BLACK);
     draw_text_box(0, 8, 240, &FONT_L, PAGE_NAME[page], C_ACC, 1);
     s[0] = (char)('1' + page);
+    s[2] = (char)('0' + NPAGE);
     draw_text_box(0, 44, 240, &FONT_S, s, C_GREY, 1);
 }
 static void draw_status(int32_t oct, uint32_t ch, uint32_t src)
@@ -189,7 +190,7 @@ static void draw_status(int32_t oct, uint32_t ch, uint32_t src)
 
 /* ---- MIDI in: from the main loop, and from app_idle while the screen draws (idle_ok) */
 typedef struct { uint8_t magic, page, oct, ch; uint8_t p[NPARAM]; } settings_t;
-static settings_t set = {0xA6, 0, 0, 0, {0}};
+static settings_t set = {0xA7, 0, 0, 0, {0}};
 static uint32_t idle_ok, midi_src;
 
 static void midi_in(void)
@@ -225,8 +226,8 @@ static void app_main(void)
     polivoks_bank_t *bank = (polivoks_bank_t *)bank_store;
 
     defaults();
-    if (settings_load(&set, sizeof set) || set.magic != 0xA6 || (int8_t)set.oct < -2 || (int8_t)set.oct > 2 || set.ch > 16u || set.page >= NPAGE) {
-        set.magic = 0xA6; set.page = 0; set.oct = 0; set.ch = 0;
+    if (settings_load(&set, sizeof set) || set.magic != 0xA7 || (int8_t)set.oct < -2 || (int8_t)set.oct > 2 || set.ch > 16u || set.page >= NPAGE) {
+        set.magic = 0xA7; set.page = 0; set.oct = 0; set.ch = 0;
     } else {
         for (p = 0; p < NPARAM; p++) if (set.p[p] <= param(p)->max) val[p] = set.p[p];
     }

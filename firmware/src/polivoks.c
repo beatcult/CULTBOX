@@ -1,61 +1,56 @@
 /* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception */
-/* Formanta Polivoks-style duophonic voice bank. See polivoks.h.
- *
- * Fixed 44.1 kHz, 128-frame blocks, float DSP, no libc: this code runs in the
- * audio interrupt and must stay in internal RAM so it keeps running while
- * Flash is being written (hence the code/const segments below). */
+/* Formanta Polivoks voice. See polivoks.h.
+ * Fixed 44.1 kHz, 128-frame blocks, float DSP, no libc: runs in the audio interrupt. */
 #include "polivoks.h"
-#ifndef FM1_HOST_TEST
-#endif
 
 #define SR 44100.0f
 #define CHUNK 16                /* control-rate update interval, in samples */
 #define HELD_MAX 8
 #define Q23 8388608.0f
 
-typedef struct {
-    uint8_t note, gate, stage, fstage;   /* stages: 0 idle, 1 attack, 2 decay/sustain, 3 release (amp / filter envelope) */
-    float pitch, target;              /* semitones (MIDI note scale, fractional) */
-    float ph1, ph2, drift1, drift2, dt1, dt2;
-    float env, fenv, vel;
-    float s1, s2;                     /* filter integrator states */
-} pv_voice_t;
-
 typedef struct { float att, dec, sus, rel; } pv_adsr_t;
 
 struct polivoks_bank {
     uint8_t pot[POLIVOKS_NPARAMS];
-    uint8_t pedal, wheel, nheld, pad;
+    uint8_t pedal, wheel, nheld, have;
     uint8_t held[HELD_MAX], sustained[HELD_MAX];
     int8_t heldcents[HELD_MAX];
-    pv_voice_t v[POLIVOKS_VOICES];
+    uint8_t stage, fstage;               /* envelope stages: 0 idle, 1 attack, 2 decay / pedestal, 3 after-sound */
+    float pitch1, target1, target2;      /* semitones (MIDI scale); oscillator I glides, oscillator II does not */
+    float ph1, ph2, drift1, drift2, dt1, dt2;
+    float env, fenv, s1, s2;             /* envelopes, filter integrator states */
     uint32_t rng, chunks;
     float lfo_phase, lfo_hold, lfo_smooth;
-    int32_t bend;                     /* Q16 semitones */
+    int32_t bend;                        /* Q16 semitones */
     /* derived from pot[] */
-    float cutoff, k, envamt, glide, detune, lfo_inc, lfo_depth, drive, trim, g1, g2, noise_level;
+    float cutoff, k, envamt, glide, detune, ofs1, ofs2, lfo_inc, d1, d2, df, da;
+    float drive, bias, trim, l1, l2, ln, fm;
     pv_adsr_t amp, filt;
 };
 
 _Static_assert(sizeof(struct polivoks_bank) <= POLIVOKS_BANK_BYTES, "POLIVOKS_BANK_BYTES too small");
 
-static const char *const wave_names[] = {"Tri", "Saw", "Sqr", "Pulse", "Noise"};
+static const char *const range_names[] = {"32'", "16'", "8'", "4'", "2'"};
+static const char *const wave_names[] = {"Tri", "Saw", "Pls 50", "Pls 30", "Pls 12"};
 static const char *const mode_names[] = {"LP", "BP"};
-static const char *const lfo_shapes[] = {"Tri", "Sqr", "Rand", "Noise"};
-static const char *const lfo_targets[] = {"Pitch", "Filter", "Both", "Amp"};
+static const char *const lfo_shapes[] = {"Tri", "Sqr", "Step", "Noise"};
 static const char *const loop_names[] = {"Off", "Filter", "Amp", "Both"};
+static const char *const voice_names[] = {"Mono", "Duo"};
+static const char *const gate_names[] = {"Off", "On"};
 static const fm1_param_t parameters[POLIVOKS_NPARAMS] = {
-    {"Cutoff", 127, 70, 0}, {"Reso", 127, 55, 0}, {"Mode", 1, 0, mode_names}, {"EnvAmt", 127, 60, 0},
-    {"Wave1", 4, 1, wave_names}, {"Wave2", 4, 3, wave_names}, {"Detune", 127, 68, 0}, {"Glide", 127, 0, 0},
-    {"Attack", 127, 3, 0}, {"Decay", 127, 55, 0}, {"Sustain", 127, 90, 0}, {"Release", 127, 40, 0},
-    {"F.Atk", 127, 2, 0}, {"F.Dec", 127, 60, 0}, {"F.Sus", 127, 30, 0}, {"F.Rel", 127, 40, 0},
-    {"LfoRate", 127, 60, 0}, {"LfoDpth", 127, 0, 0}, {"LfoWave", 3, 0, lfo_shapes}, {"LfoDest", 3, 2, lfo_targets},
-    {"Loop", 3, 0, loop_names}, {"Mix", 127, 64, 0}, {"Noise", 127, 0, 0}, {"Drive", 127, 40, 0}};
+    {"Cutoff", 127, 62, 0}, {"Reso", 127, 78, 0}, {"Mode", 1, 0, mode_names}, {"EnvAmt", 127, 70, 0},
+    {"Range1", 4, 2, range_names}, {"Wave1", 4, 1, wave_names}, {"Level1", 127, 110, 0}, {"FM 2>1", 127, 0, 0},
+    {"Range2", 4, 2, range_names}, {"Wave2", 4, 3, wave_names}, {"Level2", 127, 100, 0}, {"Detune", 127, 66, 0},
+    {"Attack", 127, 3, 0}, {"Decay", 127, 55, 0}, {"Pedest", 127, 90, 0}, {"Release", 127, 40, 0},
+    {"F.Atk", 127, 2, 0}, {"F.Dec", 127, 60, 0}, {"F.Ped", 127, 30, 0}, {"F.Rel", 127, 40, 0},
+    {"LfoRate", 127, 60, 0}, {"LfoWave", 3, 0, lfo_shapes}, {"LFO>Osc1", 127, 0, 0}, {"LFO>Osc2", 127, 0, 0},
+    {"LFO>Filt", 127, 0, 0}, {"LFO>Amp", 127, 0, 0}, {"Noise", 127, 0, 0}, {"Drive", 127, 70, 0},
+    {"Voices", 1, 1, voice_names}, {"Gate", 1, 0, gate_names}, {"Glide", 127, 0, 0}, {"Loop", 3, 0, loop_names}};
 
 const fm1_param_t *polivoks_param(int p) { return (unsigned)p < POLIVOKS_NPARAMS ? parameters + p : 0; }
 size_t polivoks_bank_size(void) { return sizeof(struct polivoks_bank); }
 
-/* ---- math helpers (Taylor/Pade; no libm) ---- */
+/* ---- math helpers (no libm) ---- */
 static inline float clampf(float x, float a, float b) { return x < a ? a : x > b ? b : x; }
 static inline float absf(float x) { return x < 0 ? -x : x; }
 static float pv_exp2(float x)
@@ -69,7 +64,7 @@ static float pv_exp2(float x)
     return p * s.f;
 }
 static inline float pv_exp(float x) { return pv_exp2(x * 1.4426950408889634f); }
-/* Smooth saturator standing in for the OTA/multiplier core's soft clipping. */
+/* Smooth saturator standing in for the filter core's overload. */
 static inline float sat(float x)
 {
     if (x > 3.0f) return 1.0f;
@@ -95,17 +90,18 @@ static inline float blep(float t, float dt)
 }
 static inline float wrap1(float p) { return p >= 1.0f ? p - 1.0f : p; }
 
-static float osc(float *phase, float inc, unsigned wave, uint32_t *rng)
+static float osc(float *phase, float inc, unsigned wave)
 {
     float p = *phase, v;
     switch (wave) {
     case POLIVOKS_WAVE_TRI: v = 4.0f * absf(p - 0.5f) - 1.0f; break;
     case POLIVOKS_WAVE_SAW: v = 2.0f * p - 1.0f - blep(p, inc); break;
-    case POLIVOKS_WAVE_SQR:
-        v = (p < 0.5f ? 1.0f : -1.0f) + blep(p, inc) - blep(wrap1(p + 0.5f), inc); break;
-    case POLIVOKS_WAVE_PULSE:
-        v = (p < 0.25f ? 1.0f : -1.0f) + blep(p, inc) - blep(wrap1(p + 0.75f), inc); break;
-    default: v = noise(rng); break;
+    default: {                                                  /* pulse: 50 %, 30 %, 12 % */
+        float w = wave == POLIVOKS_WAVE_PULSE50 ? 0.5f : wave == POLIVOKS_WAVE_PULSE30 ? 0.3f : 0.12f;
+        float mean = 2.0f * w - 1.0f;
+        v = (p < w ? 1.0f : -1.0f) + blep(p, inc) - blep(wrap1(p + 1.0f - w), inc);
+        v = (v - mean) * (1.0f / (1.0f + absf(mean)));          /* no DC, a similar level */
+        break; }
     }
     p += inc; if (p >= 1.0f) p -= 1.0f;
     *phase = p;
@@ -125,26 +121,57 @@ static void derive(polivoks_bank_t *b)
     const uint8_t *p = b->pot;
     float u;
     b->cutoff = 40.0f * pv_exp2(p[POLIVOKS_CUTOFF] * (1.0f / 127.0f) * 9.0f);
-    u = p[POLIVOKS_RESO] * (1.0f / 127.0f);
-    b->k = 2.0f * (1.0f - u * 0.985f) * (1.0f - u * 0.5f * u) + 0.03f;   /* ~2 .. ~0.04 */
+    u = 1.0f - p[POLIVOKS_RESO] * (1.0f / 127.0f);
+    b->k = 2.0f * u * u + 0.02f;                                         /* damping: ~2 (none) .. 0.02 (screaming) */
     b->envamt = p[POLIVOKS_ENVAMT] * (1.0f / 127.0f) * 6.0f;
     u = (p[POLIVOKS_DETUNE] - 64) * (1.0f / 63.0f);
-    b->detune = (u < 0 ? -1.0f : 1.0f) * u * u * 12.0f;                  /* +-12 semitones, fine near centre */
+    b->detune = (u < 0 ? -1.0f : 1.0f) * u * u * 5.0f;                   /* +-5 semitones (the original: at least +-4) */
+    b->ofs1 = ((int)p[POLIVOKS_RANGE1] - 2) * 12.0f;
+    b->ofs2 = ((int)p[POLIVOKS_RANGE2] - 2) * 12.0f;
     u = p[POLIVOKS_GLIDE] * (1.0f / 127.0f);
-    /* per-chunk glide coefficient; 0 = instant */
     b->glide = u <= 0.0f ? 1.0f : 1.0f - pv_exp(-(float)CHUNK / (SR * 0.002f * pv_exp2(u * 10.0f)));
     adsr(&b->amp, p + POLIVOKS_ATTACK);
     adsr(&b->filt, p + POLIVOKS_FATTACK);
-    /* LFO: 0.1 Hz .. ~40 Hz, phase increment per control chunk */
-    b->lfo_inc = CHUNK * 0.1f * pv_exp2(p[POLIVOKS_LFORATE] * (1.0f / 127.0f) * 8.6f) / SR;
-    b->lfo_depth = p[POLIVOKS_LFODEPTH] * (1.0f / 127.0f);
-    /* oscillator balance and grit; louder drive is trimmed back so it bites without getting louder */
-    u = (p[POLIVOKS_MIX] - 64) * (1.0f / 63.0f);
-    b->g1 = u > 0 ? 1.0f - u : 1.0f; b->g2 = u < 0 ? 1.0f + u : 1.0f;
-    b->noise_level = p[POLIVOKS_NOISE] * (1.0f / 127.0f);
+    b->lfo_inc = CHUNK * 0.1f * pv_exp2(p[POLIVOKS_LFORATE] * (1.0f / 127.0f) * 9.2f) / SR;   /* 0.1 .. ~60 Hz */
+    u = p[POLIVOKS_LFO_OSC1] * (1.0f / 127.0f); b->d1 = u * u * 14.0f;                       /* semitones */
+    u = p[POLIVOKS_LFO_OSC2] * (1.0f / 127.0f); b->d2 = u * u * 14.0f;
+    b->df = p[POLIVOKS_LFO_FILTER] * (1.0f / 127.0f) * 4.0f;                                /* octaves */
+    b->da = p[POLIVOKS_LFO_AMP] * (1.0f / 127.0f);
+    b->l1 = p[POLIVOKS_LEVEL1] * (1.0f / 127.0f);
+    b->l2 = p[POLIVOKS_LEVEL2] * (1.0f / 127.0f);
+    b->ln = p[POLIVOKS_NOISE] * (1.0f / 127.0f);
+    u = p[POLIVOKS_FM] * (1.0f / 127.0f); b->fm = u * u * 3.0f;                              /* octaves per full-scale swing */
     u = p[POLIVOKS_DRIVE] * (1.0f / 127.0f);
-    b->drive = 1.4f + 5.0f * u * u;
+    b->drive = 1.0f + 6.0f * u * u;                                      /* the mixer overloading the filter input */
+    b->bias = 0.3f * u;                                                  /* ... unevenly: even harmonics */
     b->trim = 1.0f / (1.0f + 0.9f * u);
+}
+
+/* ---- notes: the lowest held key plays oscillator I and the highest oscillator II (duo), or the last key both (mono) ---- */
+static void update(polivoks_bank_t *b, int trigger)
+{
+    if (b->nheld) {
+        unsigned lo = 0, hi = 0, last = b->nheld - 1u;
+        for (unsigned i = 1; i < b->nheld; ++i) {
+            if (b->held[i] < b->held[lo]) lo = i;
+            if (b->held[i] > b->held[hi]) hi = i;
+        }
+        if (b->pot[POLIVOKS_VOICES] == POLIVOKS_DUO) {
+            b->target1 = b->held[lo] + b->heldcents[lo] * 0.01f;
+            b->target2 = b->held[hi] + b->heldcents[hi] * 0.01f;
+        } else {
+            b->target1 = b->target2 = b->held[last] + b->heldcents[last] * 0.01f;
+        }
+        b->have = 1;
+    }
+    if (b->nheld || (b->pot[POLIVOKS_GATE] && b->have)) {                /* gate: a key, or GATE holds the last note */
+        if (trigger || !b->stage || b->stage == 3) {
+            if (!b->stage) { b->pitch1 = b->target1; b->s1 = b->s2 = 0.0f; b->env = b->fenv = 0.0f; }
+            b->stage = b->fstage = 1;
+        }
+    } else if (b->stage) {
+        b->stage = b->fstage = 3;
+    }
 }
 void polivoks_bank_set(polivoks_bank_t *b, unsigned parameter, unsigned value)
 {
@@ -152,12 +179,12 @@ void polivoks_bank_set(polivoks_bank_t *b, unsigned parameter, unsigned value)
     if (value > parameters[parameter].max) value = parameters[parameter].max;
     b->pot[parameter] = (uint8_t)value;
     derive(b);
+    if (parameter == POLIVOKS_VOICES || parameter == POLIVOKS_GATE) update(b, 0);
 }
 unsigned polivoks_bank_get(const polivoks_bank_t *b, unsigned parameter)
 {
     return parameter < POLIVOKS_NPARAMS ? b->pot[parameter] : 0;
 }
-
 void polivoks_bank_init(polivoks_bank_t *b)
 {
     uint8_t *raw = (uint8_t *)b;
@@ -168,42 +195,16 @@ void polivoks_bank_init(polivoks_bank_t *b)
 }
 void polivoks_bank_panic(polivoks_bank_t *b)
 {
-    for (unsigned i = 0; i < POLIVOKS_VOICES; ++i) {
-        pv_voice_t *v = &b->v[i];
-        v->gate = v->stage = v->fstage = 0; v->env = v->fenv = 0; v->s1 = v->s2 = 0;
-    }
-    b->nheld = 0; b->pedal = 0;
+    b->stage = b->fstage = 0; b->env = b->fenv = 0; b->s1 = b->s2 = 0;
+    b->nheld = 0; b->pedal = 0; b->have = 0;
 }
 
-/* ---- note handling: the two most recently held notes sound ---- */
-static void assign(polivoks_bank_t *b)
+static void drop(polivoks_bank_t *b, unsigned at)
 {
-    int want[POLIVOKS_VOICES], taken[POLIVOKS_VOICES] = {0, 0};
-    for (unsigned i = 0; i < POLIVOKS_VOICES; ++i)
-        want[i] = b->nheld > i ? (int)(b->nheld - 1 - i) : -1;      /* indexes into held[] */
-    for (unsigned i = 0; i < POLIVOKS_VOICES; ++i) {
-        pv_voice_t *v = &b->v[i];
-        if (!v->gate) continue;
-        int keep = 0;
-        for (unsigned w = 0; w < POLIVOKS_VOICES; ++w)
-            if (want[w] >= 0 && !taken[w] && b->held[want[w]] == v->note) { taken[w] = 1; keep = 1; break; }
-        if (!keep) { v->gate = 0; v->stage = v->fstage = 3; }
+    for (unsigned i = at; i + 1 < b->nheld; ++i) {
+        b->held[i] = b->held[i + 1]; b->sustained[i] = b->sustained[i + 1]; b->heldcents[i] = b->heldcents[i + 1];
     }
-    for (unsigned w = 0; w < POLIVOKS_VOICES; ++w) {
-        if (want[w] < 0 || taken[w]) continue;
-        pv_voice_t *free_voice = 0;
-        for (unsigned i = 0; i < POLIVOKS_VOICES; ++i) {
-            pv_voice_t *v = &b->v[i];
-            if (v->gate) continue;
-            if (!free_voice || v->env < free_voice->env) free_voice = v;
-        }
-        if (!free_voice) break;
-        pv_voice_t *v = free_voice;
-        float target = (float)b->held[want[w]] + b->heldcents[want[w]] * 0.01f;
-        if (v->stage == 0) { v->pitch = target; v->s1 = v->s2 = 0; v->env = v->fenv = 0; }  /* from silence: no glide, clean filter */
-        v->target = target; v->note = b->held[want[w]];
-        v->gate = 1; v->stage = v->fstage = 1;                       /* attacks continue from the current levels */
-    }
+    --b->nheld;
 }
 void polivoks_bank_note(polivoks_bank_t *b, unsigned note, unsigned velocity, int cents)
 {
@@ -211,31 +212,18 @@ void polivoks_bank_note(polivoks_bank_t *b, unsigned note, unsigned velocity, in
     unsigned i, found = HELD_MAX;
     for (i = 0; i < b->nheld; ++i) if (b->held[i] == note) { found = i; break; }
     if (velocity) {
-        if (found != HELD_MAX) {                                     /* re-press: move to the top */
-            for (i = found; i + 1 < b->nheld; ++i) {
-                b->held[i] = b->held[i + 1]; b->sustained[i] = b->sustained[i + 1]; b->heldcents[i] = b->heldcents[i + 1];
-            }
-            --b->nheld;
-        } else if (b->nheld == HELD_MAX) {                           /* full: forget the oldest */
-            for (i = 0; i + 1 < b->nheld; ++i) {
-                b->held[i] = b->held[i + 1]; b->sustained[i] = b->sustained[i + 1]; b->heldcents[i] = b->heldcents[i + 1];
-            }
-            --b->nheld;
-        }
+        if (found != HELD_MAX) drop(b, found);                           /* re-press: move to the top */
+        else if (b->nheld == HELD_MAX) drop(b, 0);                       /* full: forget the oldest */
         if (cents < -100) cents = -100;
         if (cents > 100) cents = 100;
         b->held[b->nheld] = (uint8_t)note; b->sustained[b->nheld] = 0; b->heldcents[b->nheld] = (int8_t)cents;
         ++b->nheld;
-        for (i = 0; i < POLIVOKS_VOICES; ++i)                        /* velocity of the newest note */
-            if (!b->v[i].gate || b->v[i].note == note) b->v[i].vel = velocity * (1.0f / 127.0f);
+        update(b, 1);
     } else if (found != HELD_MAX) {
         if (b->pedal) { b->sustained[found] = 1; return; }
-        for (i = found; i + 1 < b->nheld; ++i) {
-            b->held[i] = b->held[i + 1]; b->sustained[i] = b->sustained[i + 1]; b->heldcents[i] = b->heldcents[i + 1];
-        }
-        --b->nheld;
+        drop(b, found);
+        update(b, 0);
     }
-    assign(b);
 }
 void polivoks_bank_pedal(polivoks_bank_t *b, unsigned down)
 {
@@ -247,20 +235,15 @@ void polivoks_bank_pedal(polivoks_bank_t *b, unsigned down)
             b->held[out] = b->held[i]; b->sustained[out] = 0; b->heldcents[out] = b->heldcents[i]; ++out;
         }
     b->nheld = (uint8_t)out;
-    assign(b);
+    update(b, 0);
 }
 void polivoks_bank_bend(polivoks_bank_t *b, int32_t semitones_q16) { b->bend = semitones_q16; }
 void polivoks_bank_mod(polivoks_bank_t *b, unsigned value) { b->wheel = (uint8_t)(value > 127 ? 127 : value); }
-unsigned polivoks_bank_active(const polivoks_bank_t *b)
-{
-    unsigned n = 0;
-    for (unsigned i = 0; i < POLIVOKS_VOICES; ++i) n += b->v[i].stage != 0;
-    return n;
-}
+unsigned polivoks_bank_active(const polivoks_bank_t *b) { return b->stage != 0; }
 
 /* ---- rendering ---- */
-/* RC-style exponential ADSR. With loop set, every time the decay settles onto the sustain level
- * the attack restarts, so the envelope cycles for as long as the key is held. */
+/* RC-style exponential ADSR. With loop set, every time the decay settles onto the pedestal the
+ * attack restarts, so the envelope cycles for as long as the gate is held. */
 static inline void env_step(float *env, uint8_t *stage, const pv_adsr_t *e, unsigned loop)
 {
     switch (*stage) {
@@ -280,19 +263,18 @@ static inline void env_step(float *env, uint8_t *stage, const pv_adsr_t *e, unsi
 }
 unsigned polivoks_bank_render(polivoks_bank_t *b, int32_t *out)
 {
-    if (!polivoks_bank_active(b)) return 0;
+    if (!b->stage) return 0;
     const unsigned wave1 = b->pot[POLIVOKS_WAVE1], wave2 = b->pot[POLIVOKS_WAVE2], bandpass = b->pot[POLIVOKS_MODE];
-    const unsigned loop = b->pot[POLIVOKS_LOOP], shape = b->pot[POLIVOKS_LFOSHAPE], target = b->pot[POLIVOKS_LFOTARGET];
+    const unsigned loop = b->pot[POLIVOKS_LOOP], shape = b->pot[POLIVOKS_LFOSHAPE];
     const unsigned loop_amp = loop & POLIVOKS_LOOP_AMP, loop_filter = loop & POLIVOKS_LOOP_FILTER;
-    const float depth = clampf(b->lfo_depth + b->wheel * (1.0f / 127.0f), 0.0f, 1.0f);
+    const float wheel = b->wheel * (1.0f / 127.0f) * 1.5f;               /* mod wheel: vibrato and filter wobble */
     const float bend = (float)b->bend * (1.0f / 65536.0f);
-    const float to_pitch = target == POLIVOKS_TARGET_PITCH || target == POLIVOKS_TARGET_BOTH ? depth * 2.0f : 0.0f;
-    const float to_filter = target == POLIVOKS_TARGET_FILTER || target == POLIVOKS_TARGET_BOTH ? depth * 3.0f : 0.0f;
+    const float bias_sat = sat(b->bias), fm = b->fm;
     static float acc[POLIVOKS_FRAMES];   /* audio interrupt only: kept off its stack */
     for (unsigned i = 0; i < POLIVOKS_FRAMES; ++i) acc[i] = 0.0f;
 
     for (unsigned c = 0; c < POLIVOKS_FRAMES / CHUNK; ++c) {
-        /* shared modulator: triangle, square, sample-and-hold or smoothed noise */
+        /* the modulator: triangle, square, stepped random (sample and hold) or smoothed noise */
         b->lfo_phase += b->lfo_inc;
         if (b->lfo_phase >= 1.0f) { b->lfo_phase -= 1.0f; b->lfo_hold = noise(&b->rng); }
         float lfo;
@@ -303,42 +285,41 @@ unsigned polivoks_bank_render(polivoks_bank_t *b, int32_t *out)
         default: lfo = 4.0f * absf(b->lfo_phase - 0.5f) - 1.0f; break;
         }
         lfo = clampf(lfo, -1.0f, 1.0f);
-        float tremolo = target == POLIVOKS_TARGET_AMP ? 1.0f - depth * 0.5f * (1.0f + lfo) : 1.0f;
         ++b->chunks;
-        for (unsigned vi = 0; vi < POLIVOKS_VOICES; ++vi) {
-            pv_voice_t *v = &b->v[vi];
-            if (!v->stage) continue;
-            /* pitch: glide, bend, vibrato, analog-style drift (random walk, a few cents) */
-            v->pitch += (v->target - v->pitch) * b->glide;
-            if (!((b->chunks + vi * 7) & 31)) { v->dt1 = noise(&b->rng) * 7.0f; v->dt2 = noise(&b->rng) * 7.0f; }
-            v->drift1 += (v->dt1 - v->drift1) * 0.02f;
-            v->drift2 += (v->dt2 - v->drift2) * 0.02f;
-            float semis = v->pitch + bend + lfo * to_pitch;
-            float inc1 = 8.175799f * pv_exp2((semis + v->drift1 * 0.01f) * (1.0f / 12.0f)) * (1.0f / SR);
-            float inc2 = 8.175799f * pv_exp2((semis + b->detune + v->drift2 * 0.01f) * (1.0f / 12.0f)) * (1.0f / SR);
-            inc1 = clampf(inc1, 1e-5f, 0.45f); inc2 = clampf(inc2, 1e-5f, 0.45f);
-            /* filter coefficients from the filter envelope and LFO */
-            float fc = b->cutoff * pv_exp2(b->envamt * v->fenv + lfo * to_filter);
-            float g = warp(clampf(fc, 20.0f, 16000.0f)), k = b->k;
-            float h = 1.0f / (1.0f + k * g + g * g);
-            float level = (0.6f + 0.4f * v->vel) * 0.5f * Q23 * 0.6f * b->trim * tremolo;
-            for (unsigned i = 0; i < CHUNK; ++i) {
-                env_step(&v->env, &v->stage, &b->amp, loop_amp);
-                env_step(&v->fenv, &v->fstage, &b->filt, loop_filter);
-                float in = 0.5f * (b->g1 * osc(&v->ph1, inc1, wave1, &b->rng) + b->g2 * osc(&v->ph2, inc2, wave2, &b->rng));
-                if (b->noise_level > 0.0f) in += 0.5f * b->noise_level * noise(&b->rng);
-                in = sat(in * b->drive);
-                /* two-integrator state-variable filter; BP integrator saturates like the original's core */
-                float hp = (in - (k + g) * v->s1 - v->s2) * h;
-                float bp = g * hp + v->s1;
-                v->s1 = sat(bp + g * hp);
-                float lp = g * bp + v->s2;
-                v->s2 = lp + g * bp;
-                float y = bandpass ? bp * (k + 0.5f) * 1.6f : lp;
-                acc[c * CHUNK + i] += y * v->env * level;
-            }
-            if (!v->stage) { v->s1 = v->s2 = 0.0f; v->fstage = 0; }
+        /* pitch: glide (oscillator I only), bend, modulation, a little drift */
+        b->pitch1 += (b->target1 - b->pitch1) * b->glide;
+        if (!(b->chunks & 31)) { b->dt1 = noise(&b->rng) * 5.0f; b->dt2 = noise(&b->rng) * 5.0f; }
+        b->drift1 += (b->dt1 - b->drift1) * 0.02f;
+        b->drift2 += (b->dt2 - b->drift2) * 0.02f;
+        float s1 = b->pitch1 + b->ofs1 + bend + lfo * (b->d1 + wheel) + b->drift1 * 0.01f;
+        float s2 = b->target2 + b->ofs2 + b->detune + bend + lfo * (b->d2 + wheel) + b->drift2 * 0.01f;
+        float inc1 = clampf(8.175799f * pv_exp2(s1 * (1.0f / 12.0f)) * (1.0f / SR), 1e-5f, 0.45f);
+        float inc2 = clampf(8.175799f * pv_exp2(s2 * (1.0f / 12.0f)) * (1.0f / SR), 1e-5f, 0.45f);
+        /* the filter: its cutoff follows its envelope and the modulator, never the keys */
+        float fc = b->cutoff * pv_exp2(b->envamt * b->fenv + lfo * (b->df + wheel));
+        float g = warp(clampf(fc, 20.0f, 16000.0f)), k = b->k;
+        float h = 1.0f / (1.0f + k * g + g * g);
+        float tremolo = 1.0f - b->da * 0.5f * (1.0f + lfo);
+        float level = 0.5f * Q23 * 0.95f * b->trim * tremolo;   /* (the overdriven mixer loses level: make it up) */
+        for (unsigned i = 0; i < CHUNK; ++i) {
+            env_step(&b->env, &b->stage, &b->amp, loop_amp);
+            env_step(&b->fenv, &b->fstage, &b->filt, loop_filter);
+            float o2 = osc(&b->ph2, inc2, wave2);
+            float i1 = fm > 0.0f ? clampf(inc1 * pv_exp2(fm * o2), 1e-5f, 0.45f) : inc1;   /* oscillator II frequency-modulates I */
+            float o1 = osc(&b->ph1, i1, wave1);
+            float in = 0.55f * (b->l1 * o1 + b->l2 * o2);
+            if (b->ln > 0.0f) in += 0.5f * b->ln * noise(&b->rng);
+            in = sat(in * b->drive + b->bias) - bias_sat;                /* the mixer driving the filter, unevenly */
+            /* two-integrator state-variable filter; the integrator saturates like the original's core */
+            float hp = (in - (k + g) * b->s1 - b->s2) * h;
+            float bp = g * hp + b->s1;
+            b->s1 = sat(bp + g * hp);
+            float lp = g * bp + b->s2;
+            b->s2 = lp + g * bp;
+            float y = bandpass ? bp * (k + 0.5f) * 1.6f : lp;
+            acc[c * CHUNK + i] += y * b->env * level;
         }
+        if (!b->stage) { b->s1 = b->s2 = 0.0f; b->fstage = 0; }
     }
     for (unsigned i = 0; i < POLIVOKS_FRAMES; ++i) {
         float s = clampf(acc[i], -Q23, Q23 - 1.0f);
