@@ -80,7 +80,7 @@ static void push(uint8_t type, uint8_t a, uint8_t b, int16_t value)
     ev_head = next;
 }
 static seq_t seq;                               /* the drum sequencer: its clock runs in the audio interrupt */
-static uint8_t patbuf[2][SEQ_STEP_BYTES];       /* the pattern the ISR plays, and one to load the next into */
+static uint8_t patbuf[2][SEQ_PAT_BYTES] __attribute__((aligned(4)));   /* the pattern the ISR plays, and one to load the next into */
 static volatile uint8_t pat_live;
 static void apply(unsigned p, unsigned v)       /* ISR side */
 {
@@ -92,7 +92,7 @@ static void apply(unsigned p, unsigned v)       /* ISR side */
             polivoks_bank_panic((polivoks_bank_t *)bank_store);
             dubsiren_panic((dubsiren_bank_t *)siren_store);
             drums_panic((drums_bank_t *)drums_store);
-            seq_command(&seq, SEQ_STOP);
+            seq_kind(&seq, v == 2u);                 /* (stops it) */
             engine = (uint8_t)v;
         }
     }
@@ -117,8 +117,8 @@ static void app_audio(int32_t *out, uint32_t n)
         case EV_MOD: if (engine == 1u) dubsiren_mod(siren, e->a); else if (!engine) polivoks_bank_mod(bank, e->a); break;
         case EV_PARAM: apply(e->a, e->b); break;
         case EV_SEQ:
-            if (e->a == SEQ_CLOCK) { if (engine == 2u) seq_clock_in(&seq, patbuf[pat_live], drums); }
-            else if (e->a == SEQ_STOP || engine == 2u) seq_command(&seq, e->a);
+            if (e->a == SEQ_CLOCK) { if (engine != 1u) seq_clock_in(&seq, patbuf[pat_live]); }
+            else if (e->a == SEQ_STOP || engine != 1u) seq_command(&seq, e->a);
             break;
         default: polivoks_bank_panic(bank); dubsiren_panic(siren); drums_panic(drums); break;
         }
@@ -126,7 +126,8 @@ static void app_audio(int32_t *out, uint32_t n)
     }
     for (blk = 0; blk + POLIVOKS_FRAMES <= n; blk += POLIVOKS_FRAMES) {
         for (i = 0; i < POLIVOKS_FRAMES; i++) mono[i] = 0;
-        if (engine == 2u) { seq_block(&seq, patbuf[pat_live], drums); drums_render(drums, mono); } else if (engine) dubsiren_render(siren, mono); else polivoks_bank_render(bank, mono);
+        if (engine != 1u && seq.run) seq_block(&seq, patbuf[pat_live]);
+        if (engine == 2u) drums_render(drums, mono); else if (engine) dubsiren_render(siren, mono); else polivoks_bank_render(bank, mono);
         for (i = 0; i < POLIVOKS_FRAMES; i++) left[i] = right[i] = mono[i];
         polivoks_fx_process(mono, left, right);
         for (i = 0; i < POLIVOKS_FRAMES; i++) {   /* Q23 -> Q15 */
@@ -183,6 +184,7 @@ static const char *const PV_TITLE[9] = {"FILTER", "OSCILLATOR 1", "OSCILLATOR 2"
 static const uint8_t SI_PAGE[4] = {SIREN_P, SIREN_P + 4, SIREN_P + 8, FX_P};
 static const char *const SI_TITLE[4] = {"PITCH LFO", "FILTER", "PLAY", "BBD ECHO"};
 static const char *const DR_TITLE[3] = {"PAD", "MIX", "BBD ECHO"}, *const SQ_TITLE[2] = {"TIMING", "PATTERN"};
+static int32_t stepedit = -1;                    /* SEQ: the step whose notes or hit the four knobs edit (hold a step, press EDIT), or -1 */
 static uint8_t seqmode, seqview;                 /* SEQ mode (DRUMS only) and the page of 16 steps on show */
 static uint32_t seqpg;                           /* the knob page in SEQ mode */
 static uint32_t npage(void) { return seqmode ? 2u : engine_val() == 2u ? 3u : engine_val() ? 4u : 9u; }
@@ -218,7 +220,8 @@ static void defaults(void)
 static struct { uint8_t used[NUSER]; uint8_t p[NUSER][PRESET_N]; } ubank;
 static struct { uint8_t used[NUSER]; uint8_t p[NUSER][36]; } old_bank;   /* the layout of the first preset build */
 static volatile uint32_t cur, modified, ui_reset;
-static char msg[16];
+static char msg[40];
+static uint32_t msg_n;
 static uint32_t msg_until;
 
 static void load_preset(uint32_t i)             /* main loop, or MIDI program change */
@@ -233,13 +236,15 @@ static void load_preset(uint32_t i)             /* main loop, or MIDI program ch
         push(EV_PARAM, (uint8_t)p, val[p], 0);
     }
     cur = i; modified = 0; ui_reset = 1; msg_until = 0;
-    if (val[ENGINE_P] != 2u) seqmode = 0;       /* the sequencer's screen is the drums' */
+    if (val[ENGINE_P] == 1u) seqmode = 0;       /* (the siren has no sequencer) */
+    stepedit = -1;
 }
 static void say(const char *s, uint32_t ms)
 {
     uint32_t n = 0;
-    while (s[n] && n < 15u) { msg[n] = s[n]; n++; }
+    while (s[n] && n < 39u) { msg[n] = s[n]; n++; }
     msg[n] = 0;
+    msg_n++;
     msg_until = fm1_ms + ms;
 }
 static void save_preset(void)                   /* SAVE: into the selected user slot, or the next free one */
@@ -257,21 +262,25 @@ static void save_preset(void)                   /* SAVE: into the selected user 
     say(t, 1500);
 }
 
-/* ---- drum patterns: NPAT slots in flash (blob 1, one sector), the working one in patbuf[pat_live] */
+/* ---- patterns: NPAT slots a bank, the drums' in flash slot 0 and PLVKS's in slot 1 (4 sectors each); the working one is patbuf[pat_live] */
 #define NPAT 16u
-static struct { uint8_t used[NPAT]; struct { uint8_t tempo, swing, len, rate, hit, acc, r0, r1; uint8_t st[SEQ_STEP_BYTES]; } p[NPAT]; } pbank;
-static uint32_t pat_dirty, pat_t, pat_ver;
+typedef struct { uint8_t tempo, swing, len, rate, hit, acc, r0, r1; uint8_t d[SEQ_PAT_BYTES]; } patrec_t;
+static struct { uint8_t used[NPAT]; patrec_t p[NPAT]; } pbank;
+static struct { uint8_t used[NPAT]; struct { uint8_t tempo, swing, len, rate, hit, acc, r0, r1; uint8_t st[SEQ_DR_BYTES]; } p[NPAT]; } old_pbank;   /* blob 1 of the first sequencer build */
+static uint32_t pat_dirty, pat_t, pat_ver, bank_kind = 255u;
 static uint32_t cur_pat(void) { return val[SQ_P + SEQ_PATTERN]; }
+static uint32_t bank_slot(void) { return bank_kind == SEQ_KIND_DRUMS ? 0u : 1u; }
 static void pattern_store(uint32_t slot)
 {
     uint32_t k;
     const uint8_t *st = patbuf[pat_live];
+    if (bank_kind == 255u || slot >= NPAT) return;
     pbank.p[slot].tempo = val[SQ_P + SEQ_TEMPO]; pbank.p[slot].swing = val[SQ_P + SEQ_SWING]; pbank.p[slot].len = val[SQ_P + SEQ_LEN];
     pbank.p[slot].rate = val[SQ_P + SEQ_RATE]; pbank.p[slot].hit = val[SQ_P + SEQ_HIT]; pbank.p[slot].acc = val[SQ_P + SEQ_ACC];
-    for (k = 0; k < SEQ_STEP_BYTES; k++) pbank.p[slot].st[k] = st[k];
+    for (k = 0; k < SEQ_PAT_BYTES; k++) pbank.p[slot].d[k] = st[k];
     pbank.used[slot] = 1;
     pat_dirty = 0;
-    if (blob_save(1, &pbank, sizeof pbank)) say("SAVE FAILED", 2000);
+    if (slot_save(bank_slot(), &pbank, sizeof pbank)) say("SAVE FAILED", 2000);
 }
 static void set_param(unsigned p, unsigned v);
 static void pattern_load(uint32_t slot)
@@ -279,21 +288,139 @@ static void pattern_load(uint32_t slot)
     uint32_t k, nx = 1u - pat_live;
     if (slot >= NPAT) return;
     if (pbank.used[slot]) {
-        for (k = 0; k < SEQ_STEP_BYTES; k++) patbuf[nx][k] = pbank.p[slot].st[k];
+        for (k = 0; k < SEQ_PAT_BYTES; k++) patbuf[nx][k] = pbank.p[slot].d[k];
         set_param(SQ_P + SEQ_TEMPO, pbank.p[slot].tempo); set_param(SQ_P + SEQ_SWING, pbank.p[slot].swing);
         set_param(SQ_P + SEQ_LEN, pbank.p[slot].len); set_param(SQ_P + SEQ_RATE, pbank.p[slot].rate);
         set_param(SQ_P + SEQ_HIT, pbank.p[slot].hit); set_param(SQ_P + SEQ_ACC, pbank.p[slot].acc);
-    } else for (k = 0; k < SEQ_STEP_BYTES; k++) patbuf[nx][k] = 0;      /* an empty slot: no steps, the same tempo */
+    } else seq_clear(patbuf[nx]);                                        /* an empty slot: no steps, the same tempo */
     pat_live = (uint8_t)nx;
     pat_dirty = 0; pat_ver++;
 }
-static uint32_t step_cycle(uint32_t step, uint32_t pad)      /* a tap on a step: off, hit, accent; returns the new state */
+static void ensure_bank(void)                   /* the bank of the engine that is up: the drums' or PLVKS's */
 {
-    uint32_t n = seq_get(patbuf[pat_live], step, pad);
-    n = (n + 1u) % 3u;
-    seq_put(patbuf[pat_live], step, pad, n);
-    pat_dirty = 1; pat_t = fm1_ms; pat_ver++;
-    return n;
+    uint32_t kind = engine_val() == 2u ? SEQ_KIND_DRUMS : SEQ_KIND_PLVKS, k, u;
+    uint8_t *r = (uint8_t *)&pbank;
+    if (engine_val() == 1u || bank_kind == kind) return;
+    if (bank_kind != 255u && pat_dirty) pattern_store(cur_pat());
+    bank_kind = kind;
+    for (k = 0; k < sizeof pbank; k++) r[k] = 0;
+    if (slot_load(bank_slot(), &pbank, sizeof pbank)) {
+        for (k = 0; k < sizeof pbank; k++) r[k] = 0;
+        if (kind == SEQ_KIND_DRUMS && !blob_load(1, &old_pbank, sizeof old_pbank)) {     /* the first sequencer build kept its drum patterns in blob 1 */
+            for (u = 0; u < NPAT; u++) if (old_pbank.used[u]) {
+                for (k = 0; k < 8u; k++) ((uint8_t *)&pbank.p[u])[k] = ((uint8_t *)&old_pbank.p[u])[k];
+                for (k = 0; k < SEQ_DR_BYTES; k++) pbank.p[u].d[k] = old_pbank.p[u].st[k];
+                pbank.used[u] = 1;
+            }
+            slot_save(0, &pbank, sizeof pbank);
+        }
+    }
+    pattern_load(cur_pat());
+}
+static uint32_t last_step_note = 48;            /* the note a new PLVKS step starts with: the last one edited */
+static uint32_t aud_n[2] = {255, 255}, aud_t;   /* an audition: the notes sounding, and since when */
+static void play(uint32_t note, uint32_t vel);
+static void stop(uint32_t note);
+static void audition(uint32_t n1, uint32_t n2, uint32_t vel)
+{
+    if (aud_n[0] != 255u) stop(aud_n[0]);
+    if (aud_n[1] != 255u) stop(aud_n[1]);
+    aud_n[0] = n1; aud_n[1] = n2; aud_t = fm1_ms;
+    play(n1, vel);
+    if (n2 != 255u) play(n2, vel);
+}
+static void touch_pat(void) { pat_dirty = 1; pat_t = fm1_ms; pat_ver++; }
+static uint32_t step_tap(uint32_t step)         /* a tap on a step: drums off / hit / accent (and its edits go); PLVKS on / off */
+{
+    uint8_t *pat = patbuf[pat_live];
+    uint32_t on;
+    if (bank_kind == SEQ_KIND_DRUMS) {
+        uint32_t pd = val[DSEL_P], n = (seq_get(pat, step, pd) + 1u) % 3u;
+        seq_hit_del(pat, step, pd);
+        seq_put(pat, step, pd, n);
+        on = n;
+        if (n) audition(drums_note_of_pad(pd), 255u, n == 2u ? val[SQ_P + SEQ_ACC] : val[SQ_P + SEQ_HIT]);
+    } else {
+        seq_note_t r;
+        seq_note_get(pat, step, &r);
+        if (r.on) r.on = 0;
+        else {
+            r.on = 1;
+            if (!r.amp) { r.n1 = (uint8_t)last_step_note; r.has2 = 0; r.n2 = 0; r.len = 12; r.delay = 0; r.amp = (uint8_t)val[SQ_P + SEQ_HIT]; }
+        }
+        seq_note_put(pat, step, &r);
+        on = r.on;
+        if (on) audition(r.n1, r.has2 ? r.n2 : 255u, r.amp);
+    }
+    touch_pat();
+    return on;
+}
+static void edit_enter(uint32_t step)           /* hold a step, press EDIT: its knobs. An empty step is switched on first */
+{
+    uint8_t *pat = patbuf[pat_live];
+    if (bank_kind == SEQ_KIND_DRUMS) {
+        if (!seq_get(pat, step, val[DSEL_P])) { seq_put(pat, step, val[DSEL_P], 1); touch_pat(); }
+    } else {
+        seq_note_t r;
+        seq_note_get(pat, step, &r);
+        if (!r.on) step_tap(step);
+    }
+    stepedit = (int32_t)step;
+    pat_ver++;
+}
+/* the four values of the edited step. drums: pitch (half semitones), velocity, delay, ratchet. PLVKS: note 1, note 2 (0: none), length, velocity */
+static void sf_get(uint32_t k, int32_t *v, int32_t *mn, int32_t *mx)
+{
+    const uint8_t *pat = patbuf[pat_live];
+    uint32_t step = (uint32_t)stepedit;
+    if (bank_kind == SEQ_KIND_DRUMS) {
+        seq_hit_t h;
+        uint32_t pd = val[DSEL_P], st = seq_get(pat, step, pd);
+        if (!seq_hit_get(pat, step, pd, &h)) { h.tune = 24; h.vel = (uint8_t)(st == 2u ? val[SQ_P + SEQ_ACC] : val[SQ_P + SEQ_HIT]); h.delay = 0; h.ratchet = 0; }
+        *v = k == 0 ? h.tune : k == 1u ? h.vel : k == 2u ? h.delay : h.ratchet;
+        *mn = k == 1u ? 1 : 0; *mx = k == 0 ? 48 : k == 1u ? 127 : k == 2u ? 15 : 3;
+    } else {
+        seq_note_t r;
+        seq_note_get(pat, step, &r);
+        *v = k == 0 ? r.n1 : k == 1u ? (r.has2 ? (int32_t)r.n2 + 1 : 0) : k == 2u ? r.len : r.amp;
+        *mn = k == 3u ? 1 : 0; *mx = k == 0 ? 127 : k == 1u ? 128 : k == 2u ? 15 : 127;
+    }
+}
+static void sf_set(uint32_t k, int32_t v)
+{
+    uint8_t *pat = patbuf[pat_live];
+    uint32_t step = (uint32_t)stepedit;
+    if (bank_kind == SEQ_KIND_DRUMS) {
+        seq_hit_t h;
+        uint32_t pd = val[DSEL_P], st = seq_get(pat, step, pd);
+        if (!st) seq_put(pat, step, pd, st = 1u);
+        if (!seq_hit_get(pat, step, pd, &h)) { h.tune = 24; h.vel = (uint8_t)(st == 2u ? val[SQ_P + SEQ_ACC] : val[SQ_P + SEQ_HIT]); h.delay = 0; h.ratchet = 0; }
+        if (k == 0) h.tune = (uint8_t)v; else if (k == 1u) h.vel = (uint8_t)v; else if (k == 2u) h.delay = (uint8_t)v; else h.ratchet = (uint8_t)v;
+        if (seq_hit_put(pat, step, pd, &h)) say("STEP EDITS FULL", 1500);
+        audition(drums_note_of_pad(pd), 255u, h.vel);
+    } else {
+        seq_note_t r;
+        seq_note_get(pat, step, &r);
+        r.on = 1;
+        if (k == 0) { r.n1 = (uint8_t)v; last_step_note = (uint32_t)v; }
+        else if (k == 1u) { r.has2 = v > 0; r.n2 = (uint8_t)(v > 0 ? v - 1 : 0); }
+        else if (k == 2u) r.len = (uint8_t)v; else r.amp = (uint8_t)v;
+        seq_note_put(pat, step, &r);
+        audition(r.n1, r.has2 ? r.n2 : 255u, r.amp);
+    }
+    touch_pat();
+}
+static void copy_bar(void)                      /* HOME + ARP: the 16 steps on show (and their edits) into the next page; the pattern grows by one if it ends here */
+{
+    uint32_t pages = val[SQ_P + SEQ_LEN] + 1u;
+    if ((uint32_t)seqview + 1u >= pages) {
+        if (pages >= 4u) { say("THIS IS THE LAST BAR", 1500); return; }
+        set_param(SQ_P + SEQ_LEN, pages);       /* one bar longer */
+    }
+    seq_copy_page(patbuf[pat_live], bank_kind, seqview, (uint32_t)seqview + 1u);
+    seqview++;
+    touch_pat();
+    say(seqview == 1u ? "BAR 1 COPIED TO BAR 2" : seqview == 2u ? "BAR 2 COPIED TO BAR 3" : "BAR 3 COPIED TO BAR 4", 1500);
 }
 
 /* ---- notes (main loop) */
@@ -491,6 +618,7 @@ static void draw_pads(void)
 }
 static const int8_t KEY_STEP[27] = {0, -1, 1, -1, 2, -1, 3, 4, -1, 5, -1, 6, 7, -1, 8, -1, 9, -1, 10, 11, -1, 12, -1, 13, 14, -1, 15};   /* the white keys: 16 steps */
 static const int8_t KEY_PAD[27] = {-1, 0, -1, 1, -1, 2, -1, -1, 3, -1, 4, -1, -1, 5, -1, 6, -1, 7, -1, -1, 8, -1, 9, -1, -1, 10, -1};     /* the black keys: the pads */
+static void frame_col(uint32_t c);
 static void draw_stepgrid(void)                                  /* SEQ: ten pads by sixteen steps of the page; the selected pad's row is lit */
 {
     uint32_t r, c, run = seq.run, pos = seq.pos;
@@ -503,11 +631,88 @@ static void draw_stepgrid(void)                                  /* SEQ: ten pad
             if (run && step == pos) col = sv ? RGB(255, 235, 170) : RGB(130, 90, 44);
             cv_rect((int32_t)c * 15, (int32_t)r * 10, 13, 8, col);
         }
+    if (stepedit >= 0 && (uint32_t)stepedit / 16u == seqview) frame_col((uint32_t)stepedit % 16u);
+    cv_blit(0, 60);
+}
+static void note_str(char *s, uint32_t n)       /* C4 (60), C#4 ... */
+{
+    static const char *const NM[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    const char *q = NM[n % 12u];
+    uint32_t o = 0;
+    while (*q) s[o++] = *q++;
+    if (n / 12u < 1u) { s[o++] = '-'; s[o++] = '1'; } else put_num(s + o, n / 12u - 1u);
+    if (n / 12u >= 1u) { while (s[o]) o++; }
+    s[o] = 0;
+}
+static void draw_cell_txt(unsigned col, const char *name, const char *text)
+{
+    cv_begin(60, 34, C_BLACK);
+    cv_text((60 - text_w(&FONT_S, name)) / 2, 0, &FONT_S, name, C_DRL);
+    cv_text((60 - text_w(&FONT_S, text)) / 2, 17, &FONT_S, text, C_WHITE);
+    cv_blit(col * 60u, 164u);
+}
+static void sf_draw(uint32_t k, int32_t v)      /* one of the edited step's four values */
+{
+    static const char *const DN[4] = {"PITCH", "LEVEL", "DELAY", "REPEAT"}, *const PN[4] = {"NOTE 1", "NOTE 2", "LENGTH", "LEVEL"};
+    char t[16];
+    uint32_t o = 0;
+    if (bank_kind == SEQ_KIND_DRUMS) {
+        if (k == 0) {
+            int32_t h = v - 24;
+            if (h < 0) { t[o++] = '-'; h = -h; } else if (h > 0) t[o++] = '+';
+            put_num(t + o, (uint32_t)h / 2u); while (t[o]) o++;
+            if (h & 1) { t[o++] = '.'; t[o++] = '5'; }
+            t[o] = 0;
+        } else if (k == 1u) put_num(t, (uint32_t)v);
+        else if (k == 2u) { put_num(t, (uint32_t)v * 100u / 32u); while (t[o]) o++; t[o++] = '%'; t[o] = 0; }
+        else { t[o++] = 'x'; t[o++] = (char)('1' + v); t[o] = 0; }
+        draw_cell_txt(k, DN[k], t);
+    } else {
+        if (k == 0) note_str(t, (uint32_t)v);
+        else if (k == 1u) { if (!v) { t[0] = 'O'; t[1] = 'F'; t[2] = 'F'; t[3] = 0; } else note_str(t, (uint32_t)v - 1u); }
+        else if (k == 2u) { put_num(t, ((uint32_t)v + 1u) * 100u / 16u); while (t[o]) o++; t[o++] = '%'; t[o] = 0; }
+        else put_num(t, (uint32_t)v);
+        draw_cell_txt(k, PN[k], t);
+    }
+}
+static void frame_col(uint32_t c)               /* the edited step: a white frame round its column */
+{
+    int32_t x = (int32_t)c * 15 - 1;
+    if (x < 0) x = 0;
+    cv_rect(x, 0, 15, 1, C_WHITE); cv_rect(x, 99, 15, 1, C_WHITE);
+    cv_rect(x, 0, 1, 100, C_WHITE); cv_rect(x + 14, 0, 1, 100, C_WHITE);
+}
+static void draw_notegrid(void)                 /* SEQ on PLVKS: twelve note names by sixteen steps; the octave is the colour, the length the width */
+{
+    uint32_t c, run = seq.run, pos = seq.pos;
+    const uint8_t *st = patbuf[pat_live];
+    cv_begin(240, 100, C_BLACK);
+    for (c = 0; c < 16u; c++) {
+        uint32_t step = (uint32_t)seqview * 16u + c, r;
+        seq_note_t n;
+        seq_note_get(st, step, &n);
+        for (r = 0; r < 12u; r++) {
+            static const uint8_t BLK[12] = {0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0};
+            uint16_t col = BLK[11u - r] ? ((c >> 2) & 1u ? RGB(34, 20, 8) : RGB(26, 15, 6)) : ((c >> 2) & 1u ? RGB(52, 31, 12) : RGB(42, 25, 9));
+            if (run && step == pos) col = RGB(90, 58, 24);
+            cv_rect((int32_t)c * 15, (int32_t)r * 8, 13, 7, col);
+        }
+        if (n.on) {
+            uint32_t i;
+            for (i = 0; i < (n.has2 ? 2u : 1u); i++) {
+                uint32_t nn = i ? n.n2 : n.n1, oc = nn / 12u, w = 3u + (uint32_t)n.len * 10u / 15u;
+                uint16_t col = ui_mix(RGB(130, 70, 20), RGB(255, 235, 170), oc < 2u ? 0u : oc > 9u ? 16u : (oc - 2u) * 2u);
+                if (i) col = ui_mix(col, C_BLACK, 5u);
+                cv_rect((int32_t)c * 15, (int32_t)(11u - nn % 12u) * 8, (int32_t)w, 7, col);
+            }
+        }
+    }
+    if (stepedit >= 0 && (uint32_t)stepedit / 16u == seqview) frame_col((uint32_t)stepedit % 16u);
     cv_blit(0, 60);
 }
 static void draw_row(unsigned row, unsigned p)
 {
-    if (engine_val() == 2u) draw_cell(row, p);
+    if (engine_val() == 2u || seqmode) draw_cell(row, p);
     else if (engine_val()) draw_readout(row, p);
     else draw_knob(row, p);
 }
@@ -554,7 +759,9 @@ static void draw_radar(uint32_t sw)                              /* sw: the swee
 static void draw_header(unsigned page, uint32_t lamp)
 {
     uint32_t en = engine_val(), n = seqmode ? val[SQ_P + SEQ_LEN] + 1u : npage(), i, vw = seqmode ? seqview : page, pp = seq.run ? seq.pos / 16u : 99u;
+    char tt[12] = "STEP ";
     const char *name = seqmode ? "SEQ" : ENGINE_NAMES[en], *title = page_title(page);
+    if (seqmode && stepedit >= 0) { put_num(tt + 5, (uint32_t)stepedit + 1u); title = tt; }
     uint16_t c_name = en == 2u ? C_DR : en ? C_PH3 : C_CREAM, c_title = en == 2u ? C_DRL : en ? C_PH2 : C_CREAM_DIM;
     uint16_t c_on = en == 2u ? C_WHITE : en ? C_PH4 : C_ACC, c_off = en == 2u ? C_DRD : en ? C_PH1 : C_LEGEND;
     int32_t x, w;
@@ -580,7 +787,7 @@ static void draw_page(unsigned page)
 }
 static void draw_preset(void)
 {
-    char t[32];
+    char t[48];
     uint32_t n = 0, i = cur;
     if (fm1_ms < msg_until) {
         while (msg[n]) { t[n] = msg[n]; n++; }
@@ -590,7 +797,7 @@ static void draw_preset(void)
     }
     if (seqmode) {                                               /* SEQ: the pattern, the pad, the page */
         uint32_t o = 0;
-        const char *nm = drums_names[val[DSEL_P]];
+        const char *nm = engine_val() == 2u ? drums_names[val[DSEL_P]] : "NOTES";
         t[o++] = 'P'; put_num(t + o, cur_pat() + 1u); while (t[o]) o++;
         t[o++] = ' '; t[o++] = ' ';
         while (*nm) t[o++] = *nm++;
@@ -635,7 +842,7 @@ static void midi_in(void)
     while ((src = midi_get(&st, &d1, &d2)) != 0) {   /* 1 USB, 2 the TRS jack */
         uint32_t ty = st & 0xF0u;
         if (st >= 0xF0u) {                          /* real time: MIDI clock and transport drive the drum sequencer when Sync is Ext */
-            if (engine_val() == 2u && val[SQ_P + SEQ_SYNC]) {
+            if (engine_val() != 1u && val[SQ_P + SEQ_SYNC]) {
                 if (st == 0xF8u) push(EV_SEQ, SEQ_CLOCK, 0, 0);
                 else if (st == 0xFAu) push(EV_SEQ, SEQ_START, 0, 0);
                 else if (st == 0xFBu) push(EV_SEQ, SEQ_CONTINUE, 0, 0);
@@ -704,7 +911,9 @@ static void app_main(void)
     uint32_t gsig = ~0u, hsig = ~0u, last_pos = 255u, play_mod = 0, pad_sig = 0, ui_reset_pads = 1, engine_drawn = 0, t_radar = 0, sw = 0, lamp_drawn = 0, pl_sig = ~0u, self, t_dsp = 0, dsp_drawn = ~0u, prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
     uint8_t held[27] = {0};
     uint8_t drawn[4];
-    uint32_t knob_t[4] = {0, 0, 0, 0};
+    uint32_t knob_t[4] = {0, 0, 0, 0}, home = 0, sf_was = 0, step_used = 0;
+    int32_t sfdrawn[4] = {0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF};
+    uint8_t held_k = 255u;
     polivoks_bank_t *bank = (polivoks_bank_t *)bank_store;
     dubsiren_bank_t *siren = (dubsiren_bank_t *)siren_store;
 
@@ -748,7 +957,7 @@ static void app_main(void)
     polivoks_bank_init(bank);                   /* before the audio interrupt may touch them */
     dubsiren_init(siren);
     drums_init((drums_bank_t *)drums_store);
-    seq_init(&seq);
+    seq_init(&seq, (drums_bank_t *)drums_store, bank);
     polivoks_fx_reset();
     for (p = 0; p < NPARAM; p++) apply(p, val[p]);
     engine = (uint8_t)val[ENGINE_P];
@@ -779,26 +988,35 @@ static void app_main(void)
         down = keys & ~prev;
         up = prev & ~keys;
         prev = keys;
+        ensure_bank();
         for (k = 0; k < 27u; k++) {
-            if (down >> k & 1u && seqmode && engine_val() == 2u) {       /* SEQ: white keys are steps, black keys pick the pad */
+            if (down >> k & 1u && seqmode) {         /* SEQ: white keys are steps (a tap on release), black keys pick the pad */
                 if (KEY_STEP[k] >= 0) {
-                    uint32_t pd = val[DSEL_P], sv = step_cycle((uint32_t)seqview * 16u + (uint32_t)KEY_STEP[k], pd);
-                    if (sv) { play(drums_note_of_pad(pd), sv == 2u ? val[SQ_P + SEQ_ACC] : val[SQ_P + SEQ_HIT]); stop(drums_note_of_pad(pd)); }
-                } else if (KEY_PAD[k] >= 0 && KEY_PAD[k] < (int)DRUMS_NPAD) {
-                    set_param(DSEL_P, (unsigned)KEY_PAD[k]); pat_ver++; ui_reset = 1;
+                    held_k = (uint8_t)k; step_used = 0;
+                    if (stepedit >= 0) { edit_enter((uint32_t)seqview * 16u + (uint32_t)KEY_STEP[k]); step_used = 1; }   /* editing: the next step */
+                } else if (KEY_PAD[k] >= 0 && KEY_PAD[k] < (int)DRUMS_NPAD && engine_val() == 2u) {
+                    set_param(DSEL_P, (unsigned)KEY_PAD[k]); pat_ver++; ui_reset = 1; stepedit = -1;
                     play(drums_note_of_pad((uint32_t)KEY_PAD[k]), 100); stop(drums_note_of_pad((uint32_t)KEY_PAD[k]));
                 }
             } else if (down >> k & 1u) {
                 held[k] = engine_val() == 2u ? (k < DRUMS_NPAD ? (uint8_t)drums_note_of_pad(k) : 0u) : (uint8_t)(base + k);   /* DRUMS: the first ten keys are the pads */
                 if (held[k]) { play(held[k], 100); midi_send(0x90u | out_ch, held[k], 100); }
             }
-            if (up >> k & 1u) { if (held[k]) { stop(held[k]); midi_send(0x80u | out_ch, held[k], 0); } held[k] = 0; }
+            if (up >> k & 1u) {
+                if (seqmode && k == held_k) {
+                    held_k = 255u;
+                    if (!step_used && stepedit < 0) step_tap((uint32_t)seqview * 16u + (uint32_t)KEY_STEP[k]);
+                }
+                if (held[k]) { stop(held[k]); midi_send(0x80u | out_ch, held[k], 0); }
+                held[k] = 0;
+            }
         }
 
         b = fm1_input_edges(&rel);
+        home = fm1_in.buttons >> BTN_HOME & 1u;
         if (seqmode) {                             /* SEQ: OCT- OCT+ turn the page of 16 steps */
-            if (b & (1u << BTN_OCT_DOWN) && seqview > 0) { seqview--; pat_ver++; }
-            if (b & (1u << BTN_OCT_UP) && seqview < val[SQ_P + SEQ_LEN]) { seqview++; pat_ver++; }
+            if (b & (1u << BTN_OCT_DOWN) && seqview > 0) { seqview--; stepedit = -1; pat_ver++; }
+            if (b & (1u << BTN_OCT_UP) && seqview < val[SQ_P + SEQ_LEN]) { seqview++; stepedit = -1; pat_ver++; }
         } else if (b & (1u << BTN_OCT_DOWN) && oct > -2) { set.oct = (uint8_t)(oct - 1); dirty = 1; t_change = fm1_ms; }
         if (!seqmode && b & (1u << BTN_OCT_UP) && oct < 2) { set.oct = (uint8_t)(oct + 1); dirty = 1; t_change = fm1_ms; }
         if ((e = fm1_enc_take(ENC_ALGORITHM)) != 0) {
@@ -813,7 +1031,7 @@ static void app_main(void)
             } else if ((int32_t)engine_val() + (e > 0 ? 1 : -1) >= 0 && (int32_t)engine_val() + (e > 0 ? 1 : -1) <= 2) {   /* the engine: one click, one step */
                 set_param(ENGINE_P, (unsigned)((int32_t)engine_val() + (e > 0 ? 1 : -1)));
                 nheld[0] = nheld[1] = nheld[2] = nheld[3] = 0;
-                seqmode = 0; page = 0; set.page = 0; modified = 1; ui_reset = 1; dirty = 1; t_change = fm1_ms;
+                seqmode = 0; stepedit = -1; held_k = 255u; page = 0; set.page = 0; modified = 1; ui_reset = 1; dirty = 1; t_change = fm1_ms;
                 SECTION = sections();
             }
         }
@@ -831,6 +1049,21 @@ static void app_main(void)
         }
         for (k = 0; k < 4u; k++) {
             if ((e = fm1_enc_take(ENC_KNOB1 + k)) != 0) {
+                if (seqmode && stepedit >= 0) {                        /* the edited step's four values */
+                    int32_t v, mn, mx, ae = e < 0 ? -e : e, step, nv;
+                    sf_get(k, &v, &mn, &mx);
+                    if (mx - mn <= 8) step = e > 0 ? 1 : -1;
+                    else {
+                        uint32_t dt = fm1_ms - knob_t[k], m = dt > 160u ? 1u : dt > 90u ? 2u : dt > 45u ? 4u : 8u;
+                        if (ae >= 2) m = m < 4u ? 4u : 8u;
+                        step = e * (int32_t)m;
+                    }
+                    knob_t[k] = fm1_ms;
+                    nv = v + step;
+                    nv = nv < mn ? mn : nv > mx ? mx : nv;
+                    if (nv != v) sf_set(k, nv);
+                    continue;
+                }
                 unsigned q = page_param(page, k), mx = param(q)->max;
                 int32_t v, ae = e < 0 ? -e : e, step;
                 if (mx <= 8u) step = e > 0 ? 1 : -1;                   /* a choice: one detent, one choice */
@@ -858,39 +1091,58 @@ static void app_main(void)
                 set.page = (uint8_t)page;
                 dirty = 1; t_change = fm1_ms;
             }
-        if (b & (1u << BTN_SEQ)) {                /* SEQ: the drum sequencer's screen */
-            if (engine_val() == 2u) { seqmode = !seqmode; seqpg = 0; seqview = 0; page_drawn = ~0u; pat_ver++; }
-            else say("SEQ: DRUMS ONLY", 1200);
+        if (seqmode && b & (1u << BTN_EDIT)) {     /* EDIT: hold a step and press it for that step's four knobs; again to leave */
+            if (stepedit >= 0) { stepedit = -1; pat_ver++; }
+            else if (held_k != 255u && KEY_STEP[held_k] >= 0) { edit_enter((uint32_t)seqview * 16u + (uint32_t)KEY_STEP[held_k]); step_used = 1; }
+        }
+        if (seqmode && home && b & (1u << BTN_ARP)) copy_bar();       /* HOME + ARP: this bar into the next */
+        if (b & (1u << BTN_SEQ)) {
+            if (seqmode && home) {                                   /* HOME + SEQ: clear the pattern */
+                seq_clear(patbuf[pat_live]); stepedit = -1;
+                touch_pat(); say("PATTERN CLEARED", 1500);
+            } else if (engine_val() != 1u) { seqmode = !seqmode; stepedit = -1; held_k = 255u; seqpg = 0; seqview = 0; page_drawn = ~0u; pat_ver++; }
+            else say("SEQ: PLVKS OR DRUMS", 1200);
         }
         if (rel & (1u << BTN_PLAY)) {             /* PLAY (on release: held with ALGORITHM it sets the MIDI channel): start and stop */
-            if (!play_mod && engine_val() == 2u) push(EV_SEQ, seq.run ? SEQ_STOP : SEQ_START, 0, 0);
+            if (!play_mod && engine_val() != 1u) push(EV_SEQ, seq.run ? SEQ_STOP : SEQ_START, 0, 0);
             play_mod = 0;
         }
-        if (seqmode && b & (1u << BTN_REC)) {     /* REC: clear the selected pad's row */
-            for (k = 0; k < SEQ_STEPS; k++) seq_put(patbuf[pat_live], k, val[DSEL_P], 0);
-            pat_dirty = 1; pat_t = fm1_ms; pat_ver++; say("ROW CLEARED", 1200);
+        if (seqmode && b & (1u << BTN_REC)) {     /* REC: clear the selected pad's row (PLVKS: this bar's notes) */
+            if (bank_kind == SEQ_KIND_DRUMS) { for (k = 0; k < SEQ_STEPS; k++) seq_put(patbuf[pat_live], k, val[DSEL_P], 0); say("ROW CLEARED", 1200); }
+            else {
+                for (k = 0; k < 16u; k++) { seq_note_t r; seq_note_get(patbuf[pat_live], (uint32_t)seqview * 16u + k, &r); r.on = 0; seq_note_put(patbuf[pat_live], (uint32_t)seqview * 16u + k, &r); }
+                say("BAR CLEARED", 1200);
+            }
+            stepedit = -1; touch_pat();
         }
-        if (seqmode && b & (1u << BTN_HOME)) {    /* HOME: clear the pattern */
-            for (k = 0; k < SEQ_STEP_BYTES; k++) patbuf[pat_live][k] = 0;
-            pat_dirty = 1; pat_t = fm1_ms; pat_ver++; say("PATTERN CLEARED", 1200);
-        } else if (b & (1u << BTN_HOME)) {        /* HOME: every value back to the starting sound */
-            defaults();
-            for (p = 0; p < NPARAM; p++) push(EV_PARAM, (uint8_t)p, val[p], 0);
-            for (k = 0; k < 4u; k++) drawn[k] = 0xFF;
-            modified = 1; dirty = 1; t_change = fm1_ms;
+        if (b & (1u << BTN_HOME)) {
+            if (seqmode) say("+SEQ CLEAR +ARP COPY +SAVE", 3000);   /* HOME in SEQ: ask first */
+            else {                                                    /* HOME: every value back to the starting sound */
+                defaults();
+                for (p = 0; p < NPARAM; p++) push(EV_PARAM, (uint8_t)p, val[p], 0);
+                for (k = 0; k < 4u; k++) drawn[k] = 0xFF;
+                modified = 1; dirty = 1; t_change = fm1_ms;
+            }
         }
+        if (aud_n[0] != 255u && fm1_ms - aud_t > 180u) {               /* an audition ends */
+            stop(aud_n[0]); if (aud_n[1] != 255u) stop(aud_n[1]);
+            aud_n[0] = aud_n[1] = 255u;
+        }
+        if ((seqmode && stepedit >= 0) != sf_was) { sf_was = seqmode && stepedit >= 0; ui_reset = 1; }
 
         midi_in();
-        if (ui_reset) { ui_reset = 0; for (k = 0; k < 4u; k++) drawn[k] = 0xFF; }
+        if (ui_reset) { ui_reset = 0; for (k = 0; k < 4u; k++) { drawn[k] = 0xFF; sfdrawn[k] = 0x7FFFFFFF; } }
 
         for (k = 0; k < 27u; k++) {
             uint32_t on = keys >> k & 1u;
             if (seqmode) {                                   /* SEQ: the selected pad's steps; the playhead flips its key; black keys: the pad */
                 if (KEY_STEP[k] >= 0) {
                     uint32_t step = (uint32_t)seqview * 16u + (uint32_t)KEY_STEP[k];
-                    on = seq_get(patbuf[pat_live], step, val[DSEL_P]) != 0;
+                    if (bank_kind == SEQ_KIND_DRUMS) on = seq_get(patbuf[pat_live], step, val[DSEL_P]) != 0;
+                    else { seq_note_t r; seq_note_get(patbuf[pat_live], step, &r); on = r.on; }
                     if (seq.run && seq.pos == step) on = !on;
-                } else on = KEY_PAD[k] == (int)val[DSEL_P];
+                    if (stepedit == (int32_t)step) on = 1;
+                } else on = engine_val() == 2u && KEY_PAD[k] == (int)val[DSEL_P];
             }
             fm1_led_key(KEY_LED(k), on);
         }
@@ -910,11 +1162,11 @@ static void app_main(void)
             last_pos = seq.pos;
             if (last_pos != SEQ_NONE) for (k = 0; k < DRUMS_NPAD; k++) if (seq_get(patbuf[pat_live], last_pos, k)) padhit[k] = 8;
         } else if (!seq.run) last_pos = 255u;
-        if (seqmode && engine_val() == 2u) {                      /* the step grid and its page marks */
-            uint32_t gs = pat_ver * 1000003u ^ (uint32_t)seqview * 7919u ^ val[DSEL_P] * 104729u ^ (seq.run ? ((uint32_t)seq.pos + 1u) * 31u : 0u);
-            uint32_t hs = 1u | (uint32_t)seqview << 1 | val[SQ_P + SEQ_LEN] << 4 | (seq.run ? ((uint32_t)seq.pos / 16u + 1u) << 8 : 0u);
+        if (seqmode) {                      /* the step grid and its page marks */
+            uint32_t gs = pat_ver * 1000003u ^ (uint32_t)(stepedit + 1) * 65537u ^ bank_kind * 977u ^ (uint32_t)seqview * 7919u ^ val[DSEL_P] * 104729u ^ (seq.run ? ((uint32_t)seq.pos + 1u) * 31u : 0u);
+            uint32_t hs = 1u | (uint32_t)seqview << 1 | val[SQ_P + SEQ_LEN] << 4 | (seq.run ? ((uint32_t)seq.pos / 16u + 1u) << 8 : 0u) | (uint32_t)(stepedit + 1) << 16;
             if (page == page_drawn && hs != hsig) { hsig = hs; draw_header(page, 0); }
-            if (page == page_drawn && gs != gsig) { gsig = gs; draw_stepgrid(); }
+            if (page == page_drawn && gs != gsig) { gsig = gs; if (engine_val() == 2u) draw_stepgrid(); else draw_notegrid(); }
         } else if (engine_val() == 2u) {                           /* the pad grid: a hit fades over about 0.3 s */
             uint32_t sig = val[DSEL_P], any = 0;
             for (k = 0; k < DRUMS_NPAD; k++) { sig = sig * 9u + padhit[k]; any |= padhit[k]; }
@@ -928,7 +1180,10 @@ static void app_main(void)
             sw = (sw + 2u + (uint32_t)val[SIREN_P + SIREN_RATE] * 10u / 127u) % 360u;
             draw_radar(sw);
         }
-        if ((st = cur | modified << 8 | (fm1_ms < msg_until ? 1u << 9 : 0u) | engine_val() << 10 | (uint32_t)seqmode << 12 | (uint32_t)seqview << 13 | val[DSEL_P] << 15 | cur_pat() << 19) != pl_sig) { pl_sig = st; draw_preset(); }
+        if ((st = cur | modified << 8 | (fm1_ms < msg_until ? 1u << 9 : 0u) | engine_val() << 10 | (uint32_t)seqmode << 12 | (uint32_t)seqview << 13 | val[DSEL_P] << 15 | cur_pat() << 19 | (msg_n & 15u) << 24) != pl_sig) { pl_sig = st; draw_preset(); }
+        if (seqmode && stepedit >= 0) {
+            for (k = 0; k < 4u; k++) { int32_t v, mn, mx; sf_get(k, &v, &mn, &mx); if (v != sfdrawn[k]) { sfdrawn[k] = v; sf_draw(k, v); } }
+        } else
         for (k = 0; k < 4u; k++)
             if (drawn[k] != val[page_param(page, k)] || ((uint32_t)drawn[k] == 0xFFu)) { drawn[k] = val[page_param(page, k)]; draw_row(k, page_param(page, k)); }
         if ((st = (uint32_t)(oct + 2) | (uint32_t)set.ch << 4 | midi_src << 12) != status_drawn) { status_drawn = st; draw_status(oct, set.ch, midi_src); }

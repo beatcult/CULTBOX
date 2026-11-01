@@ -9,9 +9,7 @@
 const char *const *const drums_names = DRUM_ELKA_NAMES;
 /* General MIDI drum notes of the pads: kick, snare 1, snare 2, tom 1, tom 2, conga, claves, cowbell, hats */
 static const uint8_t PAD_NOTE[DRUMS_NPAD] = {36, 38, 40, 50, 45, 63, 75, 56, 42, 46};
-static const float SEMI[26] = {0.500000f, 0.529732f, 0.561231f, 0.594604f, 0.629961f, 0.667420f, 0.707107f, 0.749154f,
-    0.793701f, 0.840896f, 0.890899f, 0.943874f, 1.000000f, 1.059463f, 1.122462f, 1.189207f, 1.259921f, 1.334840f,
-    1.414214f, 1.498307f, 1.587401f, 1.681793f, 1.781797f, 1.887749f, 2.000000f, 2.118926f};
+static const float SEMI[50] = {0.250000f, 0.264866f, 0.280616f, 0.297302f, 0.314980f, 0.333710f, 0.353553f, 0.374577f, 0.396850f, 0.420448f, 0.445449f, 0.471937f, 0.500000f, 0.529732f, 0.561231f, 0.594604f, 0.629961f, 0.667420f, 0.707107f, 0.749154f, 0.793701f, 0.840896f, 0.890899f, 0.943874f, 1.000000f, 1.059463f, 1.122462f, 1.189207f, 1.259921f, 1.334840f, 1.414214f, 1.498307f, 1.587401f, 1.681793f, 1.781797f, 1.887749f, 2.000000f, 2.118926f, 2.244924f, 2.378414f, 2.519842f, 2.669680f, 2.828427f, 2.996614f, 3.174802f, 3.363586f, 3.563595f, 3.775497f, 4.000000f, 4.237852f};   /* 2^(n/12), n = -24 .. 25 */
 
 typedef struct { float pos, inc, env, envm, gain; uint32_t active, delay; } drum_voice_t;
 struct drums_bank {
@@ -57,7 +55,8 @@ void drums_set(drums_bank_t *b, unsigned p, unsigned v)
 }
 
 void drums_note(drums_bank_t *b, unsigned note, unsigned vel) { drums_note_at(b, note, vel, 0); }
-void drums_note_at(drums_bank_t *b, unsigned note, unsigned vel, uint32_t delay)
+void drums_note_at(drums_bank_t *b, unsigned note, unsigned vel, uint32_t delay) { drums_note_ex(b, note, vel, delay, 0); }
+void drums_note_ex(drums_bank_t *b, unsigned note, unsigned vel, uint32_t delay, int tune_half)
 {
     int pad = drums_pad_of_note(note);
     drum_voice_t *v;
@@ -67,13 +66,13 @@ void drums_note_at(drums_bank_t *b, unsigned note, unsigned vel, uint32_t delay)
     if (pad < 0 || !vel) return;
     v = &b->v[pad];
     tune = b->pv[pad * 3 + DRUM_TUNE]; decay = b->pv[pad * 3 + DRUM_DECAY];
-    st = ((float)tune - 64.0f) * (12.0f / 64.0f);            /* +-12 semitones */
+    st = ((float)tune - 64.0f) * (12.0f / 64.0f) + (float)tune_half * 0.5f;     /* the pad's tune, +-12 semitones, and the step's, +-12 */
     i = (int)st;
     if ((float)i > st) i--;
     f = st - (float)i;
-    if (i < -12) { i = -12; f = 0.0f; }
-    if (i > 12) { i = 12; f = 0.0f; }
-    r0 = SEMI[i + 12]; r1 = SEMI[i + 13];
+    if (i < -24) { i = -24; f = 0.0f; }
+    if (i > 24) { i = 24; f = 0.0f; }
+    r0 = SEMI[i + 24]; r1 = SEMI[i + 25];
     v->inc = (float)KIT[pad].rate * (1.0f / 44100.0f) * (r0 + (r1 - r0) * f);
     v->pos = 0.0f;
     v->env = 1.0f;
