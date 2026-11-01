@@ -13,7 +13,8 @@
 #define SEQ_STEPS 64
 #define SEQ_DR_BYTES (SEQ_STEPS * 3)                                  /* drums: 3 bytes a step, 10 pads x 2 bits */
 #define SEQ_NEX 40                                                    /* drums: edited hits a pattern holds */
-#define SEQ_PAT_BYTES (SEQ_DR_BYTES + SEQ_NEX * 4)                    /* one pattern (PLVKS: 64 x 4 bytes, the rest unused) */
+#define SEQ_NSTRIDE 5                                                 /* PLVKS: 5 bytes a step */
+#define SEQ_PAT_BYTES (SEQ_DR_BYTES + SEQ_NEX * 8)                    /* one pattern (PLVKS: 64 x 5 bytes, the rest unused) */
 enum { SEQ_TEMPO, SEQ_SWING, SEQ_LEN, SEQ_RATE, SEQ_PATTERN, SEQ_SYNC, SEQ_HIT, SEQ_ACC, SEQ_NPARAMS };
 /* SEQ_TEMPO 0..200 (40..240 BPM), SEQ_SWING 0..127 (50..75 %), SEQ_LEN 0..3 (16, 32, 48, 64 steps),
  * SEQ_RATE 0..2 (1/8, 1/16, 1/32 a step), SEQ_PATTERN (the slot: not used here), SEQ_SYNC 0 internal, 1 MIDI clock,
@@ -22,14 +23,16 @@ enum { SEQ_STOP, SEQ_START, SEQ_CONTINUE, SEQ_CLOCK };
 enum { SEQ_KIND_PLVKS, SEQ_KIND_DRUMS };
 #define SEQ_NONE 255u
 
-typedef struct { uint8_t tune, vel, delay, ratchet; } seq_hit_t;      /* tune 0..48 half semitones (24: none), vel 1..127, delay 0..15 (of 32 of a step), ratchet 0..3 (1..4 hits) */
-typedef struct { uint8_t on, n1, has2, n2, len, delay, amp; } seq_note_t;   /* notes 0..127, len 0..15 (1/16 .. 16/16 of a step), delay 0..15, amp 1..127 */
-typedef struct { float t; uint8_t used, note, vel; } seq_ev_t;        /* a note on (vel > 0) or off, t samples from the block start */
+typedef struct { uint8_t tune, vel, delay, ratchet, chance; } seq_hit_t;  /* tune 0..48 half semitones (24: none), vel 1..127, delay 0..15 (of 32 of a step), ratchet 0..3 (1..4 hits), chance 0..15 (15: always; else (chance + 1)/16) */
+typedef struct { uint8_t on, n1, has2, n2, len, delay, amp, slide, chance; } seq_note_t;   /* notes 0..127, len 0..15 (1/16 .. 16/16 of a step), delay 0..15, amp 1..127, slide (glide in from the note before, legato), chance 0..15 */
+typedef struct { float t; uint8_t used, note, vel; } seq_ev_t;        /* a note on (vel > 0; bit 7: legato) or off, t samples from the block start */
 typedef struct {
     volatile uint8_t run, pos;           /* running; the step last played (SEQ_NONE: none yet) */
     uint8_t kind, tempo, swing, len, rate, sync, hit, acc;
     float next_in, est;                  /* samples to the next step; one clock's length, measured */
-    uint32_t clk, since;
+    uint32_t clk, since, rng;            /* (the random numbers of the chance) */
+    uint8_t tied;                        /* the notes of the step before are held on for the slide into this one */
+    uint8_t prev[2];                     /* the notes of the step before (255: none), for a slide */
     drums_bank_t *d; polivoks_bank_t *pv;
     seq_ev_t ev[8];
     uint8_t snd[6];                      /* PLVKS notes switched on by the sequencer (255: none) */

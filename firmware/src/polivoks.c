@@ -16,7 +16,8 @@ struct polivoks_bank {
     uint8_t held[HELD_MAX], sustained[HELD_MAX];
     int8_t heldcents[HELD_MAX];
     uint8_t stage, fstage;               /* envelope stages: 0 idle, 1 attack, 2 decay / pedestal, 3 after-sound */
-    float pitch1, target1, target2;      /* semitones (MIDI scale); oscillator I glides, oscillator II does not */
+    float pitch1, pitch2, target1, target2;   /* semitones (MIDI scale); oscillator I glides, oscillator II only in a slide */
+    uint8_t slide;                       /* the last note came in legato (the sequencer's slide): both oscillators glide to it */
     float ph1, ph2, drift1, drift2, dt1, dt2;
     float env, fenv, s1, s2;             /* envelopes, filter integrator states */
     uint32_t rng, chunks;
@@ -24,7 +25,7 @@ struct polivoks_bank {
     int32_t bend;                        /* Q16 semitones */
     /* derived from pot[] */
     float cutoff, k, envamt, glide, detune, ofs1, ofs2, lfo_inc, d1, d2, df, da;
-    float drive, bias, trim, l1, l2, ln, fm;
+    float drive, bias, trim, l1, l2, ln, fm, slide_k;
     pv_adsr_t amp, filt;
 };
 
@@ -130,6 +131,7 @@ static void derive(polivoks_bank_t *b)
     b->ofs2 = ((int)p[POLIVOKS_RANGE2] - 2) * 12.0f;
     u = p[POLIVOKS_GLIDE] * (1.0f / 127.0f);
     b->glide = u <= 0.0f ? 1.0f : 1.0f - pv_exp(-(float)CHUNK / (SR * 0.002f * pv_exp2(u * 10.0f)));
+    b->slide_k = 1.0f - pv_exp(-(float)CHUNK / (SR * 0.06f));            /* a slide: about 60 ms */
     adsr(&b->amp, p + POLIVOKS_ATTACK);
     adsr(&b->filt, p + POLIVOKS_FATTACK);
     b->lfo_inc = CHUNK * 0.1f * pv_exp2(p[POLIVOKS_LFORATE] * (1.0f / 127.0f) * 9.2f) / SR;   /* 0.1 .. ~60 Hz */
@@ -166,7 +168,7 @@ static void update(polivoks_bank_t *b, int trigger)
     }
     if (b->nheld || (b->pot[POLIVOKS_GATE] && b->have)) {                /* gate: a key, or GATE holds the last note */
         if (trigger || !b->stage || b->stage == 3) {
-            if (!b->stage) { b->pitch1 = b->target1; b->s1 = b->s2 = 0.0f; b->env = b->fenv = 0.0f; }
+            if (!b->stage) { b->pitch1 = b->target1; b->pitch2 = b->target2; b->s1 = b->s2 = 0.0f; b->env = b->fenv = 0.0f; }
             b->stage = b->fstage = 1;
         }
     } else if (b->stage) {
@@ -206,7 +208,7 @@ static void drop(polivoks_bank_t *b, unsigned at)
     }
     --b->nheld;
 }
-void polivoks_bank_note(polivoks_bank_t *b, unsigned note, unsigned velocity, int cents)
+static void note_on_off(polivoks_bank_t *b, unsigned note, unsigned velocity, int cents, int legato)
 {
     if (note > 127) return;
     unsigned i, found = HELD_MAX;
@@ -218,13 +220,16 @@ void polivoks_bank_note(polivoks_bank_t *b, unsigned note, unsigned velocity, in
         if (cents > 100) cents = 100;
         b->held[b->nheld] = (uint8_t)note; b->sustained[b->nheld] = 0; b->heldcents[b->nheld] = (int8_t)cents;
         ++b->nheld;
-        update(b, 1);
+        b->slide = (uint8_t)legato;
+        update(b, !legato);
     } else if (found != HELD_MAX) {
         if (b->pedal) { b->sustained[found] = 1; return; }
         drop(b, found);
         update(b, 0);
     }
 }
+void polivoks_bank_note(polivoks_bank_t *b, unsigned note, unsigned velocity, int cents) { note_on_off(b, note, velocity, cents, 0); }
+void polivoks_bank_note_legato(polivoks_bank_t *b, unsigned note, unsigned velocity) { note_on_off(b, note, velocity, 0, 1); }
 void polivoks_bank_pedal(polivoks_bank_t *b, unsigned down)
 {
     b->pedal = down ? 1 : 0;
@@ -287,12 +292,16 @@ unsigned polivoks_bank_render(polivoks_bank_t *b, int32_t *out)
         lfo = clampf(lfo, -1.0f, 1.0f);
         ++b->chunks;
         /* pitch: glide (oscillator I only), bend, modulation, a little drift */
-        b->pitch1 += (b->target1 - b->pitch1) * b->glide;
+        {
+            float g1 = b->slide && b->slide_k < b->glide ? b->slide_k : b->glide;
+            b->pitch1 += (b->target1 - b->pitch1) * g1;
+            b->pitch2 += (b->target2 - b->pitch2) * (b->slide ? b->slide_k : 1.0f);
+        }
         if (!(b->chunks & 31)) { b->dt1 = noise(&b->rng) * 5.0f; b->dt2 = noise(&b->rng) * 5.0f; }
         b->drift1 += (b->dt1 - b->drift1) * 0.02f;
         b->drift2 += (b->dt2 - b->drift2) * 0.02f;
         float s1 = b->pitch1 + b->ofs1 + bend + lfo * (b->d1 + wheel) + b->drift1 * 0.01f;
-        float s2 = b->target2 + b->ofs2 + b->detune + bend + lfo * (b->d2 + wheel) + b->drift2 * 0.01f;
+        float s2 = b->pitch2 + b->ofs2 + b->detune + bend + lfo * (b->d2 + wheel) + b->drift2 * 0.01f;
         float inc1 = clampf(8.175799f * pv_exp2(s1 * (1.0f / 12.0f)) * (1.0f / SR), 1e-5f, 0.45f);
         float inc2 = clampf(8.175799f * pv_exp2(s2 * (1.0f / 12.0f)) * (1.0f / SR), 1e-5f, 0.45f);
         /* the filter: its cutoff follows its envelope and the modulator, never the keys */
