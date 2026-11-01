@@ -1,0 +1,43 @@
+# DRUMS, SEQ mode: enter steps with the white keys, pick pads with the black keys, play, change page and length
+200 enc 1 1
+400 enc 1 1
+600 btn 11
+800 keys 0x1
+850 keys 0
+900 keys 0x80
+950 keys 0
+1000 keys 0x4000
+1050 keys 0
+1100 keys 0x200000
+1150 keys 0
+1200 keys 0x8
+1250 keys 0
+1300 keys 0x80
+1350 keys 0
+1400 keys 0x200000
+1450 keys 0
+1500 keys 0x100000
+1550 keys 0
+1600 keys 0x10
+1650 keys 0
+1700 keys 0x200
+1750 keys 0
+1800 keys 0x800
+1850 keys 0
+1900 keys 0x1000
+1950 keys 0
+2000 shot
+2100 btndown 12
+2150 btnup 12
+2900 shot
+3000 enc 4 1
+3100 btn 1
+3200 keys 0x1
+3250 keys 0
+3300 shot
+3500 shot
+4300 btndown 12
+4350 btnup 12
+4400 shot
+7000 shot
+end 7500

@@ -13,7 +13,7 @@ static const float SEMI[26] = {0.500000f, 0.529732f, 0.561231f, 0.594604f, 0.629
     0.793701f, 0.840896f, 0.890899f, 0.943874f, 1.000000f, 1.059463f, 1.122462f, 1.189207f, 1.259921f, 1.334840f,
     1.414214f, 1.498307f, 1.587401f, 1.681793f, 1.781797f, 1.887749f, 2.000000f, 2.118926f};
 
-typedef struct { float pos, inc, env, envm, gain; uint32_t active; } drum_voice_t;
+typedef struct { float pos, inc, env, envm, gain; uint32_t active, delay; } drum_voice_t;
 struct drums_bank {
     drum_voice_t v[DRUMS_NPAD];
     uint8_t pv[DRUMS_PADVALS];
@@ -41,7 +41,7 @@ void drums_init(drums_bank_t *b)
     unsigned i;
     for (i = 0; i < DRUMS_NPAD; i++) {
         b->v[i].pos = b->v[i].inc = b->v[i].env = b->v[i].envm = b->v[i].gain = 0.0f;
-        b->v[i].active = 0;
+        b->v[i].active = 0; b->v[i].delay = 0;
         b->pv[i * 3u + DRUM_TUNE] = 64; b->pv[i * 3u + DRUM_DECAY] = 127; b->pv[i * 3u + DRUM_LEVEL] = 100;
     }
     b->level = 100; b->crush = 0; b->tone = 127; b->choke = 1;
@@ -56,7 +56,8 @@ void drums_set(drums_bank_t *b, unsigned p, unsigned v)
     else if (p == DRUMS_CHOKE) b->choke = (uint8_t)v;
 }
 
-void drums_note(drums_bank_t *b, unsigned note, unsigned vel)
+void drums_note(drums_bank_t *b, unsigned note, unsigned vel) { drums_note_at(b, note, vel, 0); }
+void drums_note_at(drums_bank_t *b, unsigned note, unsigned vel, uint32_t delay)
 {
     int pad = drums_pad_of_note(note);
     drum_voice_t *v;
@@ -83,6 +84,7 @@ void drums_note(drums_bank_t *b, unsigned note, unsigned vel)
     }
     v->gain = ((float)vel * (1.0f / 127.0f)) * ((float)b->pv[pad * 3 + DRUM_LEVEL] * 0.01f);
     v->active = 1;
+    v->delay = delay;
     if (pad == HAT_CLOSED && b->choke) b->v[HAT_OPEN].active = 0;
 }
 
@@ -98,7 +100,9 @@ unsigned drums_render(drums_bank_t *b, int32_t *out)
         float pos, inc, env, envm, g;
         if (!v->active) continue;
         pos = v->pos; inc = v->inc; env = v->env; envm = v->envm; g = v->gain;
-        for (i = 0; i < DRUMS_FRAMES; i++) {
+        i = v->delay < DRUMS_FRAMES ? v->delay : DRUMS_FRAMES;       /* a delayed hit starts part way into the block */
+        v->delay -= i;
+        for (; i < DRUMS_FRAMES; i++) {
             uint32_t ip = (uint32_t)pos;
             float f, s;
             if (ip >= last || env < 0.0005f) { v->active = 0; break; }

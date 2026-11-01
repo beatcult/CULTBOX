@@ -16,6 +16,7 @@ typedef struct drums_bank drums_bank_t;
 void drums_init(drums_bank_t *b);
 void drums_panic(drums_bank_t *b);
 void drums_note(drums_bank_t *b, unsigned note, unsigned velocity);   /* a General MIDI drum note; velocity 0: ignored (one shots) */
+void drums_note_at(drums_bank_t *b, unsigned note, unsigned velocity, uint32_t delay);   /* the same, starting delay samples from now (the sequencer) */
 void drums_set(drums_bank_t *b, unsigned parameter, unsigned value);
 unsigned drums_render(drums_bank_t *b, int32_t *out);                 /* 0 when silent */
 int drums_pad_of_note(unsigned note);                                 /* -1: not a pad */

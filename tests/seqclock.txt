@@ -1,0 +1,20 @@
+# DRUMS sequencer on MIDI clock: Sync Ext, start, 120 BPM clocks, stop
+200 enc 1 1
+400 enc 1 1
+600 btn 11
+700 keys 0x1
+750 keys 0
+800 keys 0x4
+850 keys 0
+900 keys 0x10
+950 keys 0
+1000 keys 0x80
+1050 keys 0
+1100 enc 0 1
+1200 enc 3 1
+1300 midi 0xFA 0 0
+1310 clock 120 192
+2500 shot
+3200 midi 0xFC 0 0
+3300 shot
+end 3600
