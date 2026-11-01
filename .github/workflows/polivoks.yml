@@ -56,7 +56,7 @@ jobs:
           cp build/dinghy.fwsc polivoks-dinghy.fwsc
           gh release delete polivoks-latest --yes --cleanup-tag 2>/dev/null || true
           gh release create polivoks-latest polivoks-dinghy.fwsc --prerelease \
-              --title "Polivoks on Dinghy (latest build)" --notes "Built from ${GITHUB_SHA}" --target "${GITHUB_SHA}"
+              --title "BEAT CULT (latest build)" --notes "Built from ${GITHUB_SHA}" --target "${GITHUB_SHA}"
       - uses: actions/upload-artifact@v4
         with:
           name: polivoks-dinghy

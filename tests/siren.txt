@@ -1,9 +1,10 @@
 # switch to the siren, play, sweep, turn pages
 200 keys 0x80
 600 keys 0
-800 btn 12
+800 enc 1 1
 1000 shot
 1200 keys 0x80
+1500 shot
 1900 keys 0
 2000 btn 3
 2200 shot

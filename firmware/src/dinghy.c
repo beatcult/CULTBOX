@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* Polivoks for the M-VAVE FM-1: a duophonic Formanta Polivoks-style voice with a BBD echo,
- * on the Dinghy platform (platform.c: updates, USB rescue, USB-MIDI, keys, knobs, screen, flash).
+/* BEAT CULT for the M-VAVE FM-1: two engines, PLVKS (a duophonic Formanta Polivoks-style voice) and DUBMARINE (a dub siren),
+ * sharing a BBD echo, on the Dinghy platform (platform.c: updates, USB rescue, USB-MIDI, keys, knobs, screen, flash).
  *
  *   keys       play the voice (two notes at once: the newest two held notes sound)
  *   SELECT     the page (nine: filter, oscillator 1, oscillator 2, amp envelope, filter envelope, LFO, mod and drive, play, BBD echo)
@@ -11,19 +11,22 @@
  *   OCT- OCT+  the octave (kept in flash)
  *   PRESETS    the preset: F1..F12 (factory), U1..U16 (yours); loaded as you turn; * marks an edited sound
  *   SAVE       store the sound in the selected user slot (from a factory preset: the next free slot)
- *   ALGORITHM  the MIDI channel: OMNI or 1..16 (kept in flash)
+ *   ALGORITHM  the engine: turn right for DUBMARINE, left for PLVKS
+ *   PLAY+ALGORITHM  hold PLAY and turn ALGORITHM: the MIDI channel, OMNI or 1..16 (kept in flash)
  *   MIDI       program change selects a preset
  *   MASTER     the volume (platform.c)
  *   MIDI in    notes, pitch bend, mod wheel (CC1), sustain (CC64), all-notes-off (CC123)
  *
- *   PLAY       the engine: Polivoks or dub siren (lit: siren). The siren (dubsiren.c, after beatcult/dubmarine) plays its
- *              pitch from the keys, with a glide for smooth sweeps; its pages are pitch and LFO, filter, play, echo.
+ *   DUBMARINE  the dub siren (dubsiren.c, after beatcult/dubmarine) plays its pitch from the keys, with a glide for smooth
+ *              sweeps; its pages are pitch and LFO, filter, play, echo. Its screen is a radar (ui_gfx.c draws it in integers).
  *
  * The voices (polivoks.c, dubsiren.c) and the echo (polivoks_fx.c) are float DSP: the build asks for the FM-1's float
  * hardware (-mfprev1, tools/build.py). tests/host.c runs this file on a computer. */
 static void app_idle(void);
 #define LCD_IDLE app_idle                       /* while the screen's DMA runs: MIDI in (platform.c) */
 #include "platform.c"
+#include "ui_gfx.c"
+#include "logo.h"
 #ifdef DINGHY_HOST
 #define FM1_TICKS_PER_US 24u
 static uint32_t fm1_ticks(void) { return 0; }   /* (no counter on the computer: the meter reads 0) */
@@ -128,7 +131,7 @@ static volatile uint32_t selftest_expect = 4571585u;   /* (not a constant in the
 /* ---- parameters: names, ranges, defaults */
 static const fm1_param_t FXP[POLIVOKS_FX_PARAMS] = {
     {"Time", 127, 0, 0}, {"Feedbk", 127, 0, 0}, {"Tone", 127, 0, 0}, {"Echo", 127, 0, 0}};
-static const char *const ENGINE_NAMES[] = {"Polivoks", "Siren"};
+static const char *const ENGINE_NAMES[] = {"PLVKS", "DUBMARINE"};
 static const fm1_param_t ENGP = {"Engine", 1, 0, ENGINE_NAMES};
 static const fm1_param_t *param(unsigned p)
 {
@@ -140,7 +143,7 @@ static const uint8_t PV_PAGE[9] = {0, 4, 8, 12, 16, 20, 24, 28, FX_P};
 static const char *const PV_TITLE[9] = {"FILTER", "OSCILLATOR 1", "OSCILLATOR 2", "AMP ENVELOPE", "FILTER ENV",
                                         "LFO", "MOD AND DRIVE", "PLAY", "BBD ECHO"};
 static const uint8_t SI_PAGE[4] = {SIREN_P, SIREN_P + 4, SIREN_P + 8, FX_P};
-static const char *const SI_TITLE[4] = {"SIREN", "SIREN FILTER", "SIREN PLAY", "BBD ECHO"};
+static const char *const SI_TITLE[4] = {"PITCH LFO", "FILTER", "PLAY", "BBD ECHO"};
 static uint32_t npage(void) { return engine_val() ? 4u : 9u; }
 static uint32_t page_base(uint32_t page) { return engine_val() ? SI_PAGE[page] : PV_PAGE[page]; }
 static const char *page_title(uint32_t page) { return engine_val() ? SI_TITLE[page] : PV_TITLE[page]; }
@@ -207,13 +210,22 @@ static void save_preset(void)                   /* SAVE: into the selected user 
 
 /* ---- notes (main loop) */
 static uint32_t last_note = 255;
+static uint32_t nheld[4], ping;                 /* the held notes (a bit each) and the radar's ping (0 = none) */
 static void play(uint32_t note, uint32_t vel)
 {
     if (note > 127u || !vel) return;
     push(EV_NOTE, (uint8_t)note, (uint8_t)vel, 0);
     last_note = note;
+    nheld[note >> 5] |= 1u << (note & 31u);
+    ping = 1;
 }
-static void stop(uint32_t note) { if (note <= 127u) push(EV_NOTE, (uint8_t)note, 0, 0); }
+static void stop(uint32_t note)
+{
+    if (note > 127u) return;
+    push(EV_NOTE, (uint8_t)note, 0, 0);
+    nheld[note >> 5] &= ~(1u << (note & 31u));
+}
+static uint32_t gate(void) { return nheld[0] | nheld[1] | nheld[2] | nheld[3]; }
 
 /* ---- the screen */
 #define C_ACC RGB(255, 150, 60)                 /* the Polivoks' amber */
@@ -277,25 +289,135 @@ static void format_param(unsigned p, char *s)     /* the siren's values in their
     default: if (param(p)->names) { const char *n = param(p)->names[v]; uint32_t i = 0; while (n[i] && i < 15u) { s[i] = n[i]; i++; } s[i] = 0; } else put_num(s, v); return;
     }
 }
-static void draw_row(unsigned row, unsigned p)
+/* PLVKS: a panel in the Polivoks' manner: cream legends, black knobs with a white pointer, rocker switches, a red lamp */
+#define C_CREAM RGB(236, 226, 196)
+#define C_CREAM_DIM RGB(150, 142, 120)
+#define C_LEGEND RGB(80, 75, 64)
+#define C_RED RGB(255, 40, 30)
+/* DUBMARINE: a radar's phosphor greens */
+#define C_PH0 RGB(0, 18, 8)
+#define C_PH1 RGB(0, 70, 30)
+#define C_PH2 RGB(20, 150, 64)
+#define C_PH3 RGB(60, 215, 100)
+#define C_PH4 RGB(150, 255, 175)
+#define KNOB_Y 66
+#define RADAR_X 4
+#define RADAR_Y 62
+#define RADAR_R 60
+
+static void draw_knob(unsigned col, unsigned p)
 {
     const fm1_param_t *d = param(p);
     char s[24];
-    int32_t y = 66 + (int32_t)row * 34;
+    uint32_t v = val[p], mx = d->max, n, i;
+    int32_t cx4 = 30 * 4, cy4 = 58 * 4, a, w;
     format_param(p, s);
-    draw_text_box(8, y, 100, &FONT_S, d->name, C_GREY, 0);
-    draw_text_box(112, y, 120, &FONT_S, s, C_WHITE, 2);
-    lcd_fill(8, y + 20, 224, 6, C_TRACK);
-    lcd_fill(8, y + 20, (uint32_t)val[p] * 224u / (d->max ? d->max : 1u), 6, C_ACC);
+    cv_begin(60, 112, C_BLACK);
+    w = text_w(&FONT_S, d->name);
+    cv_text((60 - w) / 2, 0, &FONT_S, d->name, C_CREAM_DIM);
+    if (mx == 1u) {                                              /* a switch: a rocker */
+        cv_rect(18, 38, 24, 40, RGB(96, 96, 100));
+        cv_rect(20, 40, 20, 36, RGB(14, 14, 16));
+        if (v) { cv_rect(21, 41, 18, 17, C_CREAM); cv_rect(21, 59, 18, 16, RGB(40, 40, 44)); }
+        else { cv_rect(21, 41, 18, 17, RGB(40, 40, 44)); cv_rect(21, 59, 18, 16, C_CREAM); }
+        cv_rect(21, 57, 18, 2, RGB(70, 70, 74));
+    } else {
+        n = mx > 8u ? 10u : mx;
+        for (i = 0; i <= n; i++) {                               /* the printed scale */
+            int32_t ang = -135 + (int32_t)(i * 270u / n);
+            int32_t tx = cx4 + ((104 * ui_sin(ang)) >> 14), ty = cy4 - ((104 * ui_cos(ang)) >> 14);
+            int lit = mx > 8u ? (i * mx <= v * 10u) : (i == v);
+            ui_disc(tx, ty, lit ? 7 : 5, lit ? C_ACC : RGB(64, 60, 52));
+        }
+        ui_disc(cx4, cy4, 80, RGB(24, 24, 26));                  /* the knob */
+        ui_ring(cx4, cy4, 78, 3, RGB(110, 108, 104));
+        ui_disc(cx4, cy4, 56, RGB(38, 38, 40));
+        a = -135 + (int32_t)(v * 270u / (mx ? mx : 1u));
+        ui_spoke(cx4, cy4, a, 5, 17, 7, C_CREAM);                /* the pointer */
+    }
+    w = text_w(&FONT_S, s);
+    cv_text((60 - w) / 2, 92, &FONT_S, s, C_WHITE);
+    cv_rect(4, 110, 52, 1, C_LEGEND);                             /* the legend's rule */
+    cv_blit(col * 60u, KNOB_Y);
+}
+static void draw_readout(unsigned row, unsigned p)               /* DUBMARINE: the radar's side column */
+{
+    const fm1_param_t *d = param(p);
+    char s[24];
+    format_param(p, s);
+    cv_begin(106, 32, C_BLACK);
+    cv_text(0, 0, &FONT_S, d->name, C_PH2);
+    cv_text(0, 16, &FONT_S, s, C_PH4);
+    cv_blit(134, RADAR_Y + row * 34u);
+}
+static void draw_row(unsigned row, unsigned p)
+{
+    if (engine_val()) draw_readout(row, p); else draw_knob(row, p);
+}
+static void draw_radar(uint32_t sw)                              /* sw: the sweep's angle, degrees clockwise from the top */
+{
+    int32_t c = RADAR_R + 2, c4 = c * 4, t, i, k;
+    cv_begin(124, 124, C_BLACK);
+    ui_disc(c4, c4, RADAR_R * 4, C_PH0);
+    for (i = 1; i <= 3; i++) ui_ring(c4, c4, i * 80, 2, C_PH1);  /* range rings */
+    cv_line(c, 2, c, 122, C_PH1);                                /* the cross */
+    cv_line(2, c, 122, c, C_PH1);
+    for (i = 0; i < 360; i += 30) {                              /* bearing ticks */
+        int32_t sn = ui_sin(i), cs = ui_cos(i);
+        cv_line(c + ((57 * sn) >> 14), c - ((57 * cs) >> 14), c + ((60 * sn) >> 14), c - ((60 * cs) >> 14), C_PH2);
+    }
+    for (t = 30; t >= 0; t--) {                                  /* the sweep and its fading trail */
+        int32_t a = (int32_t)sw - t, lv = 5 - t * 5 / 30;
+        uint16_t col = lv >= 5 ? C_PH4 : lv >= 4 ? C_PH3 : lv >= 2 ? C_PH2 : lv >= 1 ? C_PH1 : C_PH0;
+        int32_t ex = (RADAR_R * ui_sin(a)) >> 14, ey = (RADAR_R * ui_cos(a)) >> 14;
+        int32_t px = (RADAR_R * ui_sin(a - 1)) >> 14, py = (RADAR_R * ui_cos(a - 1)) >> 14;
+        cv_line(c, c, c + ex, c - ey, col);
+        cv_line(c, c, c + (ex + px) / 2, c - (ey + py) / 2, col);      /* (between two degrees: no gaps at the rim) */
+    }
+    for (k = 0; k < 128; k++) {                                  /* a blip for each held note: bearing = note name, range = pitch */
+        int32_t nn, ang, r, dd, lv;
+        if (!(nheld[k >> 5] >> (k & 31) & 1u)) continue;
+        nn = k < 36 ? 36 : k > 96 ? 96 : k;
+        ang = (k % 12) * 30 + 15;
+        r = 8 + (nn - 36) * 48 / 60;
+        dd = ((int32_t)sw - ang + 720) % 360;                    /* how long ago the sweep passed it */
+        lv = dd < 200 ? 16 - dd * 12 / 200 : 4;
+        ui_disc(c4 + ((r * 4 * ui_sin(ang)) >> 14), c4 - ((r * 4 * ui_cos(ang)) >> 14), 11, ui_mix(C_PH4, C_PH0, (uint32_t)lv));
+    }
+    if (ping) {                                                  /* a ping goes out when a note starts */
+        uint32_t lv = 16u - ping * 16u / (RADAR_R + 3u);
+        ui_ring(c4, c4, (int32_t)ping * 4, 3, ui_mix(C_PH3, C_PH0, lv));
+        ping += 3u;
+        if (ping > RADAR_R) ping = 0;
+    }
+    ui_ring(c4, c4, RADAR_R * 4, 4, RGB(34, 110, 60));           /* the bezel */
+    ui_disc(c4, c4, 8, C_PH4);
+    cv_blit(RADAR_X, RADAR_Y);
+}
+static void draw_header(unsigned page, uint32_t lamp)
+{
+    const char *name = engine_val() ? "DUBMARINE" : "PLVKS", *title = page_title(page);
+    uint32_t n = npage(), i;
+    int32_t x, w;
+    cv_begin(240, 40, C_BLACK);
+    cv_text(8, 2, &FONT_L, name, engine_val() ? C_PH3 : C_CREAM);
+    w = text_w(&FONT_L, name);
+    if (!engine_val()) {                                         /* the red lamp: a note sounds */
+        ui_disc((8 + w + 18) * 4, 19 * 4, lamp ? 28 : 24, lamp ? C_RED : RGB(80, 12, 10));
+        if (lamp) ui_ring((8 + w + 18) * 4, 19 * 4, 40, 4, RGB(150, 24, 18));
+    }
+    w = text_w(&FONT_S, title);
+    cv_text(236 - w, 2, &FONT_S, title, engine_val() ? C_PH2 : C_CREAM_DIM);
+    x = 236 - (int32_t)(n * 10u - 4u);
+    for (i = 0; i < n; i++)                                      /* the page marks */
+        cv_rect(x + (int32_t)i * 10, 24, 6, 6, i == page ? (engine_val() ? C_PH4 : C_ACC) : (engine_val() ? C_PH1 : C_LEGEND));
+    cv_rect(0, 39, 240, 1, engine_val() ? C_PH1 : C_LEGEND);
+    cv_blit(0, 0);
 }
 static void draw_page(unsigned page)
 {
-    char s[8] = "1/9";
     lcd_fill(0, 0, 240, 240, C_BLACK);
-    draw_text_box(0, 8, 240, &FONT_L, page_title(page), C_ACC, 1);
-    s[0] = (char)('1' + page);
-    s[2] = (char)('0' + npage());
-    draw_text_box(190, 44, 50, &FONT_S, s, C_GREY, 2);
+    draw_header(page, gate() != 0);
 }
 static void draw_preset(void)
 {
@@ -304,7 +426,7 @@ static void draw_preset(void)
     if (fm1_ms < msg_until) {
         while (msg[n]) { t[n] = msg[n]; n++; }
         t[n] = 0;
-        draw_text_box(0, 44, 190, &FONT_S, t, C_ACC, 0);
+        draw_text_box(8, 44, 224, &FONT_S, t, C_ACC, 0);
         return;
     }
     if (i < NFACTORY) {
@@ -318,7 +440,7 @@ static void draw_preset(void)
     }
     if (modified) t[n++] = '*';
     t[n] = 0;
-    draw_text_box(0, 44, 190, &FONT_S, t, C_GREY, 0);
+    draw_text_box(8, 44, 224, &FONT_S, t, engine_val() ? C_PH2 : C_CREAM_DIM, 0);
 }
 static void draw_status(int32_t oct, uint32_t ch, uint32_t src)
 {
@@ -351,7 +473,7 @@ static void midi_in(void)
         else if (ty == 0xB0u) {
             if (d1 == 1u) push(EV_MOD, d2, 0, 0);
             else if (d1 == 64u) push(EV_PEDAL, d2 >= 64u, 0, 0);
-            else if (d1 == 120u || d1 == 123u) push(EV_PANIC, 0, 0, 0);
+            else if (d1 == 120u || d1 == 123u) { push(EV_PANIC, 0, 0, 0); nheld[0] = nheld[1] = nheld[2] = nheld[3] = 0; }
         }
     }
 }
@@ -368,10 +490,36 @@ static const section_t SECTION_SI[] = {
     {BTN_SEL, 1, 1}, {BTN_EDIT, 0, 1}, {BTN_ENV, 2, 1}, {BTN_LFO, 0, 1}, {BTN_GLO, 2, 1}, {BTN_FX, 3, 1}};
 #define NSECTION 6u
 
+static void splash(void)                        /* the boot screen: the BEAT CULT sleeper, the name, the two engines */
+{
+    uint32_t i, a, t0;
+    uint16_t ramp[16];
+    int32_t w;
+    for (a = 0; a < 16u; a++) ramp[a] = ui_mix(C_CREAM, C_BLACK, a);
+    lcd_fill(0, 0, 240, 240, C_BLACK);
+    cv_begin(LOGO_W, LOGO_H, C_BLACK);
+    for (i = 0; i < LOGO_W * LOGO_H; i++) {
+        uint32_t v = LOGO[i / 2u];
+        v = (i & 1u) ? (v & 15u) : (v >> 4);
+        if (v) cv_pset((int32_t)(i % LOGO_W), (int32_t)(i / LOGO_W), ramp[v]);
+    }
+    cv_blit(60, 20);
+    w = text_w(&FONT_L, "BEAT CULT");
+    draw_text_box((uint32_t)(120 - w / 2) - 10u, 156, (uint32_t)w + 20u, &FONT_L, "BEAT CULT", C_CREAM, 1);
+    draw_text_box(0, 200, 240, &FONT_S, "PLVKS   DUBMARINE", C_CREAM_DIM, 1);
+    lcd_sync();
+    t0 = fm1_ms;
+    #ifdef DINGHY_HOST
+    (void)t0;                                   /* (the computer shows it for no time: the test scripts keep their clock) */
+#else
+    for (i = 0; i < 4000u && fm1_ms - t0 < 1800u; i++) platform_poll();
+#endif
+}
+
 static void app_main(void)
 {
     const section_t *SECTION = SECTION_PV;
-    uint32_t engine_drawn = 0, pl_sig = ~0u, self, t_dsp = 0, dsp_drawn = ~0u, prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
+    uint32_t engine_drawn = 0, t_radar = 0, sw = 0, lamp_drawn = 0, pl_sig = ~0u, self, t_dsp = 0, dsp_drawn = ~0u, prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
     uint8_t held[27] = {0};
     uint8_t drawn[4];
     uint32_t knob_t[4] = {0, 0, 0, 0};
@@ -410,6 +558,7 @@ static void app_main(void)
     for (p = 0; p < NPARAM; p++) apply(p, val[p]);
     engine = (uint8_t)val[ENGINE_P];
     ready = 1;
+    splash();
 
     {
         char t[40] = "FLOAT ", *q = t + 6;
@@ -442,10 +591,20 @@ static void app_main(void)
         b = fm1_input_edges(&rel);
         if (b & (1u << BTN_OCT_DOWN) && oct > -2) { set.oct = (uint8_t)(oct - 1); dirty = 1; t_change = fm1_ms; }
         if (b & (1u << BTN_OCT_UP) && oct < 2) { set.oct = (uint8_t)(oct + 1); dirty = 1; t_change = fm1_ms; }
-        if ((e = fm1_enc_take(ENC_ALGORITHM)) != 0) {      /* the MIDI channel: OMNI or 1..16 */
-            int32_t c = (int32_t)set.ch + e;
-            set.ch = (uint8_t)(c < 0 ? 0 : c > 16 ? 16 : c);
-            dirty = 1; t_change = fm1_ms;
+        if ((e = fm1_enc_take(ENC_ALGORITHM)) != 0) {
+            if (fm1_in.buttons >> BTN_PLAY & 1u) {         /* PLAY held: the MIDI channel, OMNI or 1..16 */
+                int32_t c = (int32_t)set.ch + (e > 0 ? 1 : -1);
+                char t[16] = "MIDI OMNI";
+                set.ch = (uint8_t)(c < 0 ? 0 : c > 16 ? 16 : c);
+                if (set.ch) { t[5] = 'C'; t[6] = 'H'; t[7] = ' '; put_num(t + 8, set.ch); }
+                say(t, 1200);
+                dirty = 1; t_change = fm1_ms;
+            } else if ((e > 0 ? 1u : 0u) != engine_val()) {    /* the engine: right DUBMARINE, left PLVKS */
+                set_param(ENGINE_P, e > 0 ? 1u : 0u);
+                nheld[0] = nheld[1] = nheld[2] = nheld[3] = 0;
+                page = 0; set.page = 0; modified = 1; ui_reset = 1; dirty = 1; t_change = fm1_ms;
+                SECTION = engine_val() ? SECTION_SI : SECTION_PV;
+            }
         }
         if ((e = fm1_enc_take(ENC_PRESETS)) != 0) {        /* the preset: loaded as you turn */
             int32_t c = (int32_t)cur + (e > 0 ? 1 : -1);
@@ -482,11 +641,6 @@ static void app_main(void)
                 set.page = (uint8_t)page;
                 dirty = 1; t_change = fm1_ms;
             }
-        if (b & (1u << BTN_PLAY)) {               /* PLAY: the other engine */
-            set_param(ENGINE_P, engine_val() ? 0u : 1u);
-            page = 0; set.page = 0; modified = 1; ui_reset = 1; dirty = 1; t_change = fm1_ms;
-            SECTION = engine_val() ? SECTION_SI : SECTION_PV;
-        }
         if (b & (1u << BTN_HOME)) {               /* HOME: every value back to the starting sound */
             defaults();
             for (p = 0; p < NPARAM; p++) push(EV_PARAM, (uint8_t)p, val[p], 0);
@@ -500,14 +654,19 @@ static void app_main(void)
         for (k = 0; k < 27u; k++) fm1_led_key(KEY_LED(k), keys >> k & 1u);
         for (k = 0; k < NSECTION; k++)
             fm1_led_key(SECTION[k].btn, page >= SECTION[k].first && page < SECTION[k].first + SECTION[k].count);
-        fm1_led_key(BTN_PLAY, engine_val());
         fm1_led_key(BTN_OCT_DOWN, oct < 0);
         fm1_led_key(BTN_OCT_UP, oct > 0);
 
         idle_ok = 1;
         if (engine_val() != engine_drawn) { engine_drawn = engine_val(); page_drawn = ~0u; }
-        if (page != page_drawn) { page_drawn = page; draw_page(page); for (k = 0; k < 4u; k++) drawn[k] = 0xFF; status_drawn = ~0u; dsp_drawn = ~0u; pl_sig = ~0u;
+        if (page != page_drawn) { page_drawn = page; draw_page(page); lamp_drawn = gate() != 0; t_radar = 0; for (k = 0; k < 4u; k++) drawn[k] = 0xFF; status_drawn = ~0u; dsp_drawn = ~0u; pl_sig = ~0u;
  }
+        if (!engine_val() && (gate() != 0) != lamp_drawn) { lamp_drawn = gate() != 0; draw_header(page, lamp_drawn); }
+        if (engine_val() && fm1_ms - t_radar >= 45u) {            /* the radar: the sweep turns with the LFO rate */
+            t_radar = fm1_ms;
+            sw = (sw + 2u + (uint32_t)val[SIREN_P + SIREN_RATE] * 10u / 127u) % 360u;
+            draw_radar(sw);
+        }
         if ((st = cur | modified << 8 | (fm1_ms < msg_until ? 1u << 9 : 0u) | engine_val() << 10) != pl_sig) { pl_sig = st; draw_preset(); }
         for (k = 0; k < 4u; k++)
             if (drawn[k] != val[page_base(page) + k] || ((uint32_t)drawn[k] == 0xFFu)) { drawn[k] = val[page_base(page) + k]; draw_row(k, page_base(page) + k); }
@@ -522,7 +681,7 @@ static void app_main(void)
             put_num(d + n, pc > 999u ? 999u : pc);
             while (d[n]) n++;
             d[n++] = '%'; d[n] = 0;
-            if (pc != dsp_drawn) { dsp_drawn = pc; draw_text_box(0, 198, 240, &FONT_S, d, pc > 70u ? C_ACC : C_GREY, 1); }
+            if (pc != dsp_drawn) { dsp_drawn = pc; draw_text_box(0, 202, 240, &FONT_S, d, pc > 70u ? C_ACC : C_GREY, 1); }
         }
         idle_ok = 0;
 
