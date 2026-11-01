@@ -48,6 +48,10 @@ jobs:
           gcc -O2 -Wall -Wno-unused-function -DDINGHY_HOST -DAPP_VER='"host"' -Ifirmware/hal -Ifirmware/src -Ifirmware/gen \
               -o build/host/dinghy firmware/src/dinghy.c -lm 2>&1 | head -20
           build/host/dinghy build/host/dinghy tests/polivoks.txt | tail -5
+      - name: Drum engine tests
+        run: |
+          gcc -O2 -Wall -o build/drum_test tests/drum_test.c -lm
+          build/drum_test | tail -3
       - name: Publish the package
         env:
           GH_TOKEN: ${{ github.token }}

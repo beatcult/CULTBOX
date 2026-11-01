@@ -1,0 +1,19 @@
+# switch to DRUMS with the ALGORITHM dial, hit pads, edit a pad, turn pages
+200 enc 1 1
+400 enc 1 1
+600 keys 0x1
+640 shot
+700 keys 0
+900 keys 0x100
+930 shot
+1000 keys 0
+1200 enc 2 3
+1300 enc 3 8
+1500 shot
+1600 keys 0x2
+1700 keys 0
+1800 enc 0 1
+2000 shot
+2100 enc 0 1
+2300 shot
+end 2600

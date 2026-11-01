@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* Factory presets: the 32 Polivoks values, the 12 siren values, the echo's time / feedback / tone / level, the engine (0 Polivoks, 1 siren). */
-#define NFACTORY 20
-static const char *const FACTORY_NAME[NFACTORY] = {"INIT", "SCREAMER", "ACID BASS", "SUB BASS", "SOLID PAD", "FM BELL", "BUZZ ORGAN", "DRONE", "ZAP", "WOBBLE", "ARP LOOP", "WIND", "CLASSIC SIREN", "SIREN WARBLE", "POLICE", "DOWN SWEEP", "LASER", "STAIRCASE", "RANDOM CHIRP", "DUB DROP"};
+/* Factory presets: the 32 Polivoks values, the 12 siren values, the echo's time / feedback / tone / level, the engine (0 PLVKS, 1 DUBMARINE, 2 DRUMS). */
+#define NFACTORY 21
+static const char *const FACTORY_NAME[NFACTORY] = {"INIT", "SCREAMER", "ACID BASS", "SUB BASS", "SOLID PAD", "FM BELL", "BUZZ ORGAN", "DRONE", "ZAP", "WOBBLE", "ARP LOOP", "WIND", "CLASSIC SIREN", "SIREN WARBLE", "POLICE", "DOWN SWEEP", "LASER", "STAIRCASE", "RANDOM CHIRP", "DUB DROP", "ELKA KIT"};
 static const uint8_t FACTORY[NFACTORY][49] = {
     {62, 78, 0, 70, 2, 1, 110, 0, 2, 3, 100, 66, 3, 55, 90, 40, 2, 60, 30, 40, 60, 0, 0, 0, 0, 0, 0, 70, 1, 0, 0, 0, 57, 84, 76, 0, 83, 26, 64, 1, 28, 0, 0, 108, 48, 62, 60, 0, 0},   /* INIT */
     {68, 98, 0, 85, 2, 1, 110, 0, 2, 2, 100, 82, 2, 70, 100, 45, 0, 45, 45, 40, 70, 0, 14, 14, 10, 0, 0, 105, 1, 0, 22, 0, 57, 84, 76, 0, 83, 26, 64, 1, 28, 0, 0, 108, 48, 55, 60, 40, 0},   /* SCREAMER */
@@ -23,4 +23,5 @@ static const uint8_t FACTORY[NFACTORY][49] = {
     {62, 78, 0, 70, 2, 1, 110, 0, 2, 3, 100, 66, 3, 55, 90, 40, 2, 60, 30, 40, 60, 0, 0, 0, 0, 0, 0, 70, 1, 0, 0, 0, 57, 70, 70, 6, 90, 26, 64, 1, 28, 0, 50, 108, 90, 47, 60, 68, 1},   /* STAIRCASE */
     {62, 78, 0, 70, 2, 1, 110, 0, 2, 3, 100, 66, 3, 55, 90, 40, 2, 60, 30, 40, 60, 0, 0, 0, 0, 0, 0, 70, 1, 0, 0, 0, 57, 95, 80, 7, 83, 70, 64, 1, 28, 0, 50, 108, 60, 47, 60, 75, 1},   /* RANDOM CHIRP */
     {62, 78, 0, 70, 2, 1, 110, 0, 2, 3, 100, 66, 3, 55, 90, 40, 2, 60, 30, 40, 60, 0, 0, 0, 0, 0, 0, 70, 1, 0, 0, 0, 20, 20, 127, 0, 70, 20, 64, 1, 70, 0, 90, 108, 100, 75, 60, 90, 1},   /* DUB DROP */
+    {62, 78, 0, 70, 2, 1, 110, 0, 2, 3, 100, 66, 3, 55, 90, 40, 2, 60, 30, 40, 60, 0, 0, 0, 0, 0, 0, 70, 1, 0, 0, 0, 57, 84, 76, 0, 83, 26, 64, 1, 28, 0, 0, 108, 48, 62, 60, 0, 2},   /* ELKA KIT */
 };

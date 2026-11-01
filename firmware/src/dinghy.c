@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* BEAT CULT for the M-VAVE FM-1: two engines, PLVKS (a duophonic Formanta Polivoks-style voice) and DUBMARINE (a dub siren),
+/* BEAT CULT for the M-VAVE FM-1: three engines, PLVKS (a duophonic Formanta Polivoks-style voice), DUBMARINE (a dub siren) and DRUMS (sampled drums),
  * sharing a BBD echo, on the Dinghy platform (platform.c: updates, USB rescue, USB-MIDI, keys, knobs, screen, flash).
  *
  *   keys       play the voice (two notes at once: the newest two held notes sound)
@@ -11,10 +11,12 @@
  *   OCT- OCT+  the octave (kept in flash)
  *   PRESETS    the preset: F1..F12 (factory), U1..U16 (yours); loaded as you turn; * marks an edited sound
  *   SAVE       store the sound in the selected user slot (from a factory preset: the next free slot)
- *   ALGORITHM  the engine: turn right for DUBMARINE, left for PLVKS
+ *   ALGORITHM  the engine: PLVKS, DUBMARINE, DRUMS (one click, one engine)
  *   PLAY+ALGORITHM  hold PLAY and turn ALGORITHM: the MIDI channel, OMNI or 1..16 (kept in flash)
  *   MIDI       program change selects a preset
  *   MASTER     the volume (platform.c)
+ *   DRUMS      keys 1-10 play the pads (OCT does not move them); MIDI notes are General MIDI drums (36 kick, 38 snare, 42/46 hats..).
+ *              The pad grid shows hits; the PAD page tunes, shortens and levels the selected pad.
  *   MIDI in    notes, pitch bend, mod wheel (CC1), sustain (CC64), all-notes-off (CC123)
  *
  *   DUBMARINE  the dub siren (dubsiren.c, after beatcult/dubmarine) plays its pitch from the keys, with a glide for smooth
@@ -24,6 +26,7 @@
  * hardware (-mfprev1, tools/build.py). tests/host.c runs this file on a computer. */
 static void app_idle(void);
 #define LCD_IDLE app_idle                       /* while the screen's DMA runs: MIDI in (platform.c) */
+#define CV_MAX (240u * 128u)                  /* the canvas: the pad grid is 240 x 80, the radar 124 x 124 (platform.c: 240 x 64) */
 #include "platform.c"
 #include "ui_gfx.c"
 #include "logo.h"
@@ -34,6 +37,7 @@ static uint32_t fm1_ticks(void) { return 0; }   /* (no counter on the computer: 
 #include "polivoks.c"
 #include "polivoks_fx.c"
 #include "dubsiren.c"
+#include "drums.c"
 #include "sirenfmt.h"
 #include "presets.h"
 
@@ -41,7 +45,11 @@ static uint32_t fm1_ticks(void) { return 0; }   /* (no counter on the computer: 
 #define SIREN_P NVOICEPARAM                                    /* 32..43 siren */
 #define FX_P (SIREN_P + SIREN_NPARAMS)                         /* 44..47 echo (both engines) */
 #define ENGINE_P (FX_P + POLIVOKS_FX_PARAMS)                   /* 48: 0 Polivoks, 1 siren */
-#define NPARAM (ENGINE_P + 1)
+#define PRESET_N (ENGINE_P + 1)                                /* what a preset holds: 0..48 (the engine is 0 PLVKS, 1 DUBMARINE, 2 DRUMS) */
+#define PADP_P PRESET_N                                        /* 49..78: tune, decay, level of each pad (kept in the settings, not in presets) */
+#define DSEL_P (PADP_P + DRUMS_PADVALS)                        /* 79: the pad the PAD page edits */
+#define DLEV_P (DSEL_P + 1)                                    /* 80..83: drums level, crush, tone, choke */
+#define NPARAM (DLEV_P + 4)
 #define MAXPAGE 9
 
 /* ---- the sound (audio ISR): events from the main loop, one writer each side */
@@ -50,12 +58,12 @@ typedef struct { uint8_t type, a, b, pad; int16_t value; } event_t;
 enum { RING = 128 };
 static event_t ring[RING];
 static volatile uint8_t ev_head, ev_tail, ready;
-static uint32_t bank_store[POLIVOKS_BANK_BYTES / 4], siren_store[DUBSIREN_BANK_BYTES / 4];
-static volatile uint8_t engine;                 /* the engine that sounds (the ISR's copy of ENGINE_P) */
+static uint32_t bank_store[POLIVOKS_BANK_BYTES / 4], siren_store[DUBSIREN_BANK_BYTES / 4], drums_store[DRUMS_BANK_BYTES / 4];
+static volatile uint8_t engine;                 /* the engine that sounds: 0 PLVKS, 1 DUBMARINE, 2 DRUMS (the ISR's copy of ENGINE_P) */
 static int32_t mono[POLIVOKS_FRAMES], left[POLIVOKS_FRAMES], right[POLIVOKS_FRAMES];
 static volatile uint32_t dsp_peak;               /* the longest audio block since the main loop last looked, in us */
 static uint8_t val[NPARAM];                     /* the values on the panel */
-static uint32_t engine_val(void) { return val[NPARAM - 1u]; }
+static uint32_t engine_val(void) { return val[ENGINE_P]; }
 
 static void push(uint8_t type, uint8_t a, uint8_t b, int16_t value)
 {
@@ -69,34 +77,40 @@ static void apply(unsigned p, unsigned v)       /* ISR side */
     if (p < NVOICEPARAM) polivoks_bank_set((polivoks_bank_t *)bank_store, p, v);
     else if (p < FX_P) dubsiren_set((dubsiren_bank_t *)siren_store, p - SIREN_P, v);
     else if (p < ENGINE_P) polivoks_fx_set(p - FX_P, v);
-    else if (v != engine) {                      /* the other engine takes over: silence both */
-        polivoks_bank_panic((polivoks_bank_t *)bank_store);
-        dubsiren_panic((dubsiren_bank_t *)siren_store);
-        engine = (uint8_t)v;
+    else if (p == ENGINE_P) {
+        if (v != engine) {                       /* another engine takes over: silence them all */
+            polivoks_bank_panic((polivoks_bank_t *)bank_store);
+            dubsiren_panic((dubsiren_bank_t *)siren_store);
+            drums_panic((drums_bank_t *)drums_store);
+            engine = (uint8_t)v;
+        }
     }
+    else if (p < DSEL_P) drums_set((drums_bank_t *)drums_store, p - PADP_P, v);
+    else if (p > DSEL_P) drums_set((drums_bank_t *)drums_store, DRUMS_LEVEL + (p - DLEV_P), v);
 }
 
 static void app_audio(int32_t *out, uint32_t n)
 {
     polivoks_bank_t *bank = (polivoks_bank_t *)bank_store;
     dubsiren_bank_t *siren = (dubsiren_bank_t *)siren_store;
+    drums_bank_t *drums = (drums_bank_t *)drums_store;
     uint32_t i, blk, t0 = fm1_ticks(), dt;
     if (!ready) return;
     while (ev_tail != ev_head) {
         const event_t *e = &ring[ev_tail];
         switch (e->type) {
-        case EV_NOTE: if (engine) dubsiren_note(siren, e->a, e->b); else polivoks_bank_note(bank, e->a, e->b, 0); break;
+        case EV_NOTE: if (engine == 2u) drums_note(drums, e->a, e->b); else if (engine) dubsiren_note(siren, e->a, e->b); else polivoks_bank_note(bank, e->a, e->b, 0); break;
         case EV_PEDAL: if (!engine) polivoks_bank_pedal(bank, e->a); break;
-        case EV_BEND: if (engine) dubsiren_bend(siren, (int32_t)e->value * 16); else polivoks_bank_bend(bank, (int32_t)e->value * 16); break;   /* +-2 semitones */
-        case EV_MOD: if (engine) dubsiren_mod(siren, e->a); else polivoks_bank_mod(bank, e->a); break;
+        case EV_BEND: if (engine == 1u) dubsiren_bend(siren, (int32_t)e->value * 16); else if (!engine) polivoks_bank_bend(bank, (int32_t)e->value * 16); break;   /* +-2 semitones */
+        case EV_MOD: if (engine == 1u) dubsiren_mod(siren, e->a); else if (!engine) polivoks_bank_mod(bank, e->a); break;
         case EV_PARAM: apply(e->a, e->b); break;
-        default: polivoks_bank_panic(bank); dubsiren_panic(siren); break;
+        default: polivoks_bank_panic(bank); dubsiren_panic(siren); drums_panic(drums); break;
         }
         ev_tail = (uint8_t)((ev_tail + 1u) % RING);
     }
     for (blk = 0; blk + POLIVOKS_FRAMES <= n; blk += POLIVOKS_FRAMES) {
         for (i = 0; i < POLIVOKS_FRAMES; i++) mono[i] = 0;
-        if (engine) dubsiren_render(siren, mono); else polivoks_bank_render(bank, mono);
+        if (engine == 2u) drums_render(drums, mono); else if (engine) dubsiren_render(siren, mono); else polivoks_bank_render(bank, mono);
         for (i = 0; i < POLIVOKS_FRAMES; i++) left[i] = right[i] = mono[i];
         polivoks_fx_process(mono, left, right);
         for (i = 0; i < POLIVOKS_FRAMES; i++) {   /* Q23 -> Q15 */
@@ -131,12 +145,17 @@ static volatile uint32_t selftest_expect = 4571585u;   /* (not a constant in the
 /* ---- parameters: names, ranges, defaults */
 static const fm1_param_t FXP[POLIVOKS_FX_PARAMS] = {
     {"Time", 127, 0, 0}, {"Feedbk", 127, 0, 0}, {"Tone", 127, 0, 0}, {"Echo", 127, 0, 0}};
-static const char *const ENGINE_NAMES[] = {"PLVKS", "DUBMARINE"};
-static const fm1_param_t ENGP = {"Engine", 1, 0, ENGINE_NAMES};
+static const char *const ENGINE_NAMES[] = {"PLVKS", "DUBMARINE", "DRUMS"};
+static const fm1_param_t ENGP = {"Engine", 2, 0, ENGINE_NAMES};
+static const char *const CHOKE_NAMES[] = {"Off", "On"};
+static const fm1_param_t PADP[DRUM_PADPARAMS] = {{"Tune", 127, 64, 0}, {"Decay", 127, 127, 0}, {"Level", 127, 100, 0}};
+static const fm1_param_t dselp = {"Pad", DRUMS_NPAD - 1, 0, DRUM_ELKA_NAMES};
+static const fm1_param_t DGLOBP[4] = {{"Level", 127, 100, 0}, {"Crush", 127, 0, 0}, {"Tone", 127, 127, 0}, {"Choke", 1, 1, CHOKE_NAMES}};
 static const fm1_param_t *param(unsigned p)
 {
     return p < NVOICEPARAM ? polivoks_param((int)p) : p < FX_P ? dubsiren_param((int)(p - SIREN_P))
-         : p < ENGINE_P ? &FXP[p - FX_P] : &ENGP;
+         : p < ENGINE_P ? &FXP[p - FX_P] : p == ENGINE_P ? &ENGP : p < DSEL_P ? &PADP[(p - PADP_P) % DRUM_PADPARAMS]
+         : p == DSEL_P ? &dselp : &DGLOBP[p - DLEV_P];
 }
 /* pages: the first parameter of each (four to a page), per engine */
 static const uint8_t PV_PAGE[9] = {0, 4, 8, 12, 16, 20, 24, 28, FX_P};
@@ -144,9 +163,15 @@ static const char *const PV_TITLE[9] = {"FILTER", "OSCILLATOR 1", "OSCILLATOR 2"
                                         "LFO", "MOD AND DRIVE", "PLAY", "BBD ECHO"};
 static const uint8_t SI_PAGE[4] = {SIREN_P, SIREN_P + 4, SIREN_P + 8, FX_P};
 static const char *const SI_TITLE[4] = {"PITCH LFO", "FILTER", "PLAY", "BBD ECHO"};
-static uint32_t npage(void) { return engine_val() ? 4u : 9u; }
+static const char *const DR_TITLE[3] = {"PAD", "MIX", "BBD ECHO"};
+static uint32_t npage(void) { return engine_val() == 2u ? 3u : engine_val() ? 4u : 9u; }
 static uint32_t page_base(uint32_t page) { return engine_val() ? SI_PAGE[page] : PV_PAGE[page]; }
-static const char *page_title(uint32_t page) { return engine_val() ? SI_TITLE[page] : PV_TITLE[page]; }
+static const char *page_title(uint32_t page) { return engine_val() == 2u ? DR_TITLE[page] : engine_val() ? SI_TITLE[page] : PV_TITLE[page]; }
+static uint32_t page_param(uint32_t page, uint32_t k)       /* the k-th parameter on the page (the PAD page edits the selected pad) */
+{
+    if (engine_val() == 2u) return page == 0 ? (k == 0 ? DSEL_P : PADP_P + val[DSEL_P] * DRUM_PADPARAMS + k - 1u) : page == 1 ? DLEV_P + k : FX_P + k;
+    return page_base(page) + k;
+}
 
 static void set_param(unsigned p, unsigned v)   /* main loop */
 {
@@ -162,12 +187,13 @@ static void defaults(void)
     for (p = 0; p < SIREN_NPARAMS; p++) val[SIREN_P + p] = dubsiren_param((int)p)->def;
     for (p = 0; p < POLIVOKS_FX_PARAMS; p++) val[FX_P + p] = polivoks_fx_default[p];
     val[ENGINE_P] = 0;
+    for (p = PADP_P; p < NPARAM; p++) val[p] = param(p)->def;
 }
 
 /* ---- presets: NFACTORY in the code, NUSER in flash (blob 0, one sector: saved on SAVE) */
 #define NUSER 16u
 #define NPRESET (NFACTORY + NUSER)
-static struct { uint8_t used[NUSER]; uint8_t p[NUSER][NPARAM]; } ubank;
+static struct { uint8_t used[NUSER]; uint8_t p[NUSER][PRESET_N]; } ubank;
 static struct { uint8_t used[NUSER]; uint8_t p[NUSER][36]; } old_bank;   /* the layout of the first preset build */
 static volatile uint32_t cur, modified, ui_reset;
 static char msg[16];
@@ -177,8 +203,8 @@ static void load_preset(uint32_t i)             /* main loop, or MIDI program ch
 {
     unsigned p;
     if (i >= NPRESET) return;
-    if (i < NFACTORY) for (p = 0; p < NPARAM; p++) val[p] = FACTORY[i][p];
-    else if (ubank.used[i - NFACTORY]) for (p = 0; p < NPARAM; p++) val[p] = ubank.p[i - NFACTORY][p];
+    if (i < NFACTORY) for (p = 0; p < PRESET_N; p++) val[p] = FACTORY[i][p];
+    else if (ubank.used[i - NFACTORY]) for (p = 0; p < PRESET_N; p++) val[p] = ubank.p[i - NFACTORY][p];
     else defaults();
     for (p = 0; p < NPARAM; p++) {
         if (val[p] > param(p)->max) val[p] = param(p)->max;
@@ -200,7 +226,7 @@ static void save_preset(void)                   /* SAVE: into the selected user 
     if (cur >= NFACTORY) slot = cur - NFACTORY;
     else for (k = 0; k < NUSER; k++) if (!ubank.used[k]) { slot = k; break; }
     if (slot >= NUSER) { say("BANK FULL", 1500); return; }
-    for (k = 0; k < NPARAM; k++) ubank.p[slot][k] = val[k];
+    for (k = 0; k < PRESET_N; k++) ubank.p[slot][k] = val[k];
     ubank.used[slot] = 1;
     if (blob_save(0, &ubank, sizeof ubank)) { say("SAVE FAILED", 2000); return; }
     cur = NFACTORY + slot; modified = 0;
@@ -211,6 +237,7 @@ static void save_preset(void)                   /* SAVE: into the selected user 
 /* ---- notes (main loop) */
 static uint32_t last_note = 255;
 static uint32_t nheld[4], ping;                 /* the held notes (a bit each) and the radar's ping (0 = none) */
+static uint8_t padhit[DRUMS_NPAD];              /* DRUMS: how brightly each pad shows its last hit (8 = just hit) */
 static void play(uint32_t note, uint32_t vel)
 {
     if (note > 127u || !vel) return;
@@ -218,6 +245,7 @@ static void play(uint32_t note, uint32_t vel)
     last_note = note;
     nheld[note >> 5] |= 1u << (note & 31u);
     ping = 1;
+    if (engine_val() == 2u) { int pd = drums_pad_of_note(note); if (pd >= 0) padhit[pd] = 8; }
 }
 static void stop(uint32_t note)
 {
@@ -267,6 +295,15 @@ static void put_unit(char *s, const char *u)
 static void format_param(unsigned p, char *s)     /* the siren's values in their own units (as dubmarine shows them) */
 {
     uint32_t v = val[p], x;
+    if (p >= PADP_P && p < DSEL_P) {
+        uint32_t k = (p - PADP_P) % DRUM_PADPARAMS;
+        if (k == DRUM_TUNE) {                                   /* semitones, +-12 */
+            x = (v > 64u ? v - 64u : 64u - v) * 120u / 64u;
+            s[0] = v >= 64u ? '+' : '-'; put_dec(s + 1, x / 10u, x % 10u, 1); put_unit(s, " st"); return;
+        }
+        if (k == DRUM_DECAY && v >= 127u) { s[0] = 'F'; s[1] = 'U'; s[2] = 'L'; s[3] = 'L'; s[4] = 0; return; }
+        put_num(s, v); return;
+    }
     if (p < SIREN_P || p >= FX_P) { if (param(p)->names) { const char *n = param(p)->names[v]; uint32_t i = 0; while (n[i] && i < 15u) { s[i] = n[i]; i++; } s[i] = 0; } else put_num(s, v); return; }
     switch (p - SIREN_P) {
     case SIREN_TUNE: case SIREN_CUTOFF:
@@ -350,9 +387,43 @@ static void draw_readout(unsigned row, unsigned p)               /* DUBMARINE: t
     cv_text(0, 16, &FONT_S, s, C_PH4);
     cv_blit(134, RADAR_Y + row * 34u);
 }
+/* DRUMS: a grid of pads (a hit lights its pad, the selected pad has a white frame) and four values under it */
+#define C_DR RGB(255, 150, 60)
+#define C_DRD RGB(110, 60, 20)
+#define C_DRL RGB(190, 110, 50)
+static void draw_cell(unsigned col, unsigned p)
+{
+    const fm1_param_t *d = param(p);
+    char s[24];
+    int32_t w;
+    format_param(p, s);
+    cv_begin(60, 34, C_BLACK);
+    w = text_w(&FONT_S, d->name);
+    cv_text((60 - w) / 2, 0, &FONT_S, d->name, C_DRL);
+    w = text_w(&FONT_S, s);
+    cv_text((60 - w) / 2, 17, &FONT_S, s, C_WHITE);
+    cv_blit(col * 60u, 148);
+}
+static void draw_pads(void)
+{
+    uint32_t i;
+    cv_begin(240, 80, C_BLACK);
+    for (i = 0; i < DRUMS_NPAD; i++) {
+        int32_t x = 4 + (int32_t)(i % 5u) * 48, y = (int32_t)(i / 5u) * 40, w;
+        uint32_t lv = (uint32_t)padhit[i] * 2u;                  /* 0..16 */
+        uint16_t fill = ui_mix(C_DR, RGB(22, 12, 4), lv), edge = i == val[DSEL_P] ? C_WHITE : ui_mix(C_DR, C_DRD, lv);
+        cv_rect(x, y, 44, 36, edge);
+        cv_rect(x + 2, y + 2, 40, 32, fill);
+        w = text_w(&FONT_S, drums_names[i]);
+        cv_text(x + (44 - w) / 2, y + 10, &FONT_S, drums_names[i], lv > 8u ? C_BLACK : C_DR);
+    }
+    cv_blit(0, 62);
+}
 static void draw_row(unsigned row, unsigned p)
 {
-    if (engine_val()) draw_readout(row, p); else draw_knob(row, p);
+    if (engine_val() == 2u) draw_cell(row, p);
+    else if (engine_val()) draw_readout(row, p);
+    else draw_knob(row, p);
 }
 static void draw_radar(uint32_t sw)                              /* sw: the sweep's angle, degrees clockwise from the top */
 {
@@ -396,22 +467,24 @@ static void draw_radar(uint32_t sw)                              /* sw: the swee
 }
 static void draw_header(unsigned page, uint32_t lamp)
 {
-    const char *name = engine_val() ? "DUBMARINE" : "PLVKS", *title = page_title(page);
-    uint32_t n = npage(), i;
+    uint32_t en = engine_val(), n = npage(), i;
+    const char *name = ENGINE_NAMES[en], *title = page_title(page);
+    uint16_t c_name = en == 2u ? C_DR : en ? C_PH3 : C_CREAM, c_title = en == 2u ? C_DRL : en ? C_PH2 : C_CREAM_DIM;
+    uint16_t c_on = en == 2u ? C_WHITE : en ? C_PH4 : C_ACC, c_off = en == 2u ? C_DRD : en ? C_PH1 : C_LEGEND;
     int32_t x, w;
     cv_begin(240, 40, C_BLACK);
-    cv_text(8, 2, &FONT_L, name, engine_val() ? C_PH3 : C_CREAM);
+    cv_text(8, 2, &FONT_L, name, c_name);
     w = text_w(&FONT_L, name);
-    if (!engine_val()) {                                         /* the red lamp: a note sounds */
+    if (!en) {                                                   /* the red lamp: a note sounds */
         ui_disc((8 + w + 18) * 4, 19 * 4, lamp ? 28 : 24, lamp ? C_RED : RGB(80, 12, 10));
         if (lamp) ui_ring((8 + w + 18) * 4, 19 * 4, 40, 4, RGB(150, 24, 18));
     }
     w = text_w(&FONT_S, title);
-    cv_text(236 - w, 2, &FONT_S, title, engine_val() ? C_PH2 : C_CREAM_DIM);
+    cv_text(236 - w, 2, &FONT_S, title, c_title);
     x = 236 - (int32_t)(n * 10u - 4u);
     for (i = 0; i < n; i++)                                      /* the page marks */
-        cv_rect(x + (int32_t)i * 10, 24, 6, 6, i == page ? (engine_val() ? C_PH4 : C_ACC) : (engine_val() ? C_PH1 : C_LEGEND));
-    cv_rect(0, 39, 240, 1, engine_val() ? C_PH1 : C_LEGEND);
+        cv_rect(x + (int32_t)i * 10, 24, 6, 6, i == page ? c_on : c_off);
+    cv_rect(0, 39, 240, 1, c_off);
     cv_blit(0, 0);
 }
 static void draw_page(unsigned page)
@@ -440,7 +513,7 @@ static void draw_preset(void)
     }
     if (modified) t[n++] = '*';
     t[n] = 0;
-    draw_text_box(8, 44, 224, &FONT_S, t, engine_val() ? C_PH2 : C_CREAM_DIM, 0);
+    draw_text_box(8, 44, 224, &FONT_S, t, engine_val() == 2u ? C_DRL : engine_val() ? C_PH2 : C_CREAM_DIM, 0);
 }
 static void draw_status(int32_t oct, uint32_t ch, uint32_t src)
 {
@@ -488,7 +561,10 @@ static const section_t SECTION_PV[] = {
     {BTN_SEL, 0, 1}, {BTN_EDIT, 1, 2}, {BTN_ENV, 3, 2}, {BTN_LFO, 5, 2}, {BTN_GLO, 7, 1}, {BTN_FX, 8, 1}};
 static const section_t SECTION_SI[] = {
     {BTN_SEL, 1, 1}, {BTN_EDIT, 0, 1}, {BTN_ENV, 2, 1}, {BTN_LFO, 0, 1}, {BTN_GLO, 2, 1}, {BTN_FX, 3, 1}};
+static const section_t SECTION_DR[] = {
+    {BTN_SEL, 0, 1}, {BTN_EDIT, 1, 1}, {BTN_ENV, 0, 1}, {BTN_LFO, 1, 1}, {BTN_GLO, 1, 1}, {BTN_FX, 2, 1}};
 #define NSECTION 6u
+static const section_t *sections(void) { return engine_val() == 2u ? SECTION_DR : engine_val() ? SECTION_SI : SECTION_PV; }
 
 static void splash(void)                        /* the boot screen: the BEAT CULT sleeper, the name, the two engines */
 {
@@ -506,7 +582,7 @@ static void splash(void)                        /* the boot screen: the BEAT CUL
     cv_blit(60, 20);
     w = text_w(&FONT_L, "BEAT CULT");
     draw_text_box((uint32_t)(120 - w / 2) - 10u, 156, (uint32_t)w + 20u, &FONT_L, "BEAT CULT", C_CREAM, 1);
-    draw_text_box(0, 200, 240, &FONT_S, "PLVKS   DUBMARINE", C_CREAM_DIM, 1);
+    draw_text_box(0, 200, 240, &FONT_S, "PLVKS  DUBMARINE  DRUMS", C_CREAM_DIM, 1);
     lcd_sync();
     t0 = fm1_ms;
     #ifdef DINGHY_HOST
@@ -519,7 +595,7 @@ static void splash(void)                        /* the boot screen: the BEAT CUL
 static void app_main(void)
 {
     const section_t *SECTION = SECTION_PV;
-    uint32_t engine_drawn = 0, t_radar = 0, sw = 0, lamp_drawn = 0, pl_sig = ~0u, self, t_dsp = 0, dsp_drawn = ~0u, prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
+    uint32_t pad_sig = 0, ui_reset_pads = 1, engine_drawn = 0, t_radar = 0, sw = 0, lamp_drawn = 0, pl_sig = ~0u, self, t_dsp = 0, dsp_drawn = ~0u, prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
     uint8_t held[27] = {0};
     uint8_t drawn[4];
     uint32_t knob_t[4] = {0, 0, 0, 0};
@@ -534,7 +610,7 @@ static void app_main(void)
             for (u = 0; u < NUSER; u++) if (old_bank.used[u]) {
                 defaults();
                 for (z = 0; z < 32u; z++) ubank.p[u][z] = old_bank.p[u][z];
-                for (z = 32u; z < NPARAM; z++) ubank.p[u][z] = val[z];
+                for (z = 32u; z < PRESET_N; z++) ubank.p[u][z] = val[z];
                 for (z = 0; z < 4u; z++) ubank.p[u][FX_P + z] = old_bank.p[u][32u + z];
                 ubank.p[u][FX_P] = (uint8_t)(old_bank.p[u][32] * 42u / 59u);   /* the echo time range grew: same time as before */
                 ubank.used[u] = 1;
@@ -574,7 +650,7 @@ static void app_main(void)
     for (;;) {
         uint32_t keys, down, up, rel, b, out_ch = set.ch ? set.ch - 1u : 0u, st, page = set.page;
         if (page >= npage()) page = 0, set.page = 0;
-        SECTION = engine_val() ? SECTION_SI : SECTION_PV;
+        SECTION = sections();
         int32_t oct = (int8_t)set.oct, e;
         uint32_t base = (uint32_t)((int32_t)KEY0 + 12 * oct);
         platform_poll();
@@ -584,8 +660,11 @@ static void app_main(void)
         up = prev & ~keys;
         prev = keys;
         for (k = 0; k < 27u; k++) {
-            if (down >> k & 1u) { held[k] = (uint8_t)(base + k); play(held[k], 100); midi_send(0x90u | out_ch, held[k], 100); }
-            if (up >> k & 1u) { stop(held[k]); midi_send(0x80u | out_ch, held[k], 0); }
+            if (down >> k & 1u) {
+                held[k] = engine_val() == 2u ? (k < DRUMS_NPAD ? (uint8_t)drums_note_of_pad(k) : 0u) : (uint8_t)(base + k);   /* DRUMS: the first ten keys are the pads */
+                if (held[k]) { play(held[k], 100); midi_send(0x90u | out_ch, held[k], 100); }
+            }
+            if (up >> k & 1u) { if (held[k]) { stop(held[k]); midi_send(0x80u | out_ch, held[k], 0); } held[k] = 0; }
         }
 
         b = fm1_input_edges(&rel);
@@ -599,11 +678,11 @@ static void app_main(void)
                 if (set.ch) { t[5] = 'C'; t[6] = 'H'; t[7] = ' '; put_num(t + 8, set.ch); }
                 say(t, 1200);
                 dirty = 1; t_change = fm1_ms;
-            } else if ((e > 0 ? 1u : 0u) != engine_val()) {    /* the engine: right DUBMARINE, left PLVKS */
-                set_param(ENGINE_P, e > 0 ? 1u : 0u);
+            } else if ((int32_t)engine_val() + (e > 0 ? 1 : -1) >= 0 && (int32_t)engine_val() + (e > 0 ? 1 : -1) <= 2) {   /* the engine: one click, one step */
+                set_param(ENGINE_P, (unsigned)((int32_t)engine_val() + (e > 0 ? 1 : -1)));
                 nheld[0] = nheld[1] = nheld[2] = nheld[3] = 0;
                 page = 0; set.page = 0; modified = 1; ui_reset = 1; dirty = 1; t_change = fm1_ms;
-                SECTION = engine_val() ? SECTION_SI : SECTION_PV;
+                SECTION = sections();
             }
         }
         if ((e = fm1_enc_take(ENC_PRESETS)) != 0) {        /* the preset: loaded as you turn */
@@ -620,7 +699,7 @@ static void app_main(void)
         }
         for (k = 0; k < 4u; k++) {
             if ((e = fm1_enc_take(ENC_KNOB1 + k)) != 0) {
-                unsigned q = page_base(page) + k, mx = param(q)->max;
+                unsigned q = page_param(page, k), mx = param(q)->max;
                 int32_t v, ae = e < 0 ? -e : e, step;
                 if (mx <= 8u) step = e > 0 ? 1 : -1;                   /* a choice: one detent, one choice */
                 else {                                                  /* by speed: slow = 1 a click, spun = up to 8 */
@@ -659,17 +738,25 @@ static void app_main(void)
 
         idle_ok = 1;
         if (engine_val() != engine_drawn) { engine_drawn = engine_val(); page_drawn = ~0u; }
-        if (page != page_drawn) { page_drawn = page; draw_page(page); lamp_drawn = gate() != 0; t_radar = 0; for (k = 0; k < 4u; k++) drawn[k] = 0xFF; status_drawn = ~0u; dsp_drawn = ~0u; pl_sig = ~0u;
+        if (page != page_drawn) { page_drawn = page; draw_page(page); lamp_drawn = gate() != 0; t_radar = 0; ui_reset_pads = 1; for (k = 0; k < 4u; k++) drawn[k] = 0xFF; status_drawn = ~0u; dsp_drawn = ~0u; pl_sig = ~0u;
  }
         if (!engine_val() && (gate() != 0) != lamp_drawn) { lamp_drawn = gate() != 0; draw_header(page, lamp_drawn); }
-        if (engine_val() && fm1_ms - t_radar >= 45u) {            /* the radar: the sweep turns with the LFO rate */
+        if (engine_val() == 2u) {                                  /* the pad grid: a hit fades over about 0.3 s */
+            uint32_t sig = val[DSEL_P], any = 0;
+            for (k = 0; k < DRUMS_NPAD; k++) { sig = sig * 9u + padhit[k]; any |= padhit[k]; }
+            if (page == page_drawn && (sig != pad_sig || ui_reset_pads)) {
+                pad_sig = sig; ui_reset_pads = 0; draw_pads();
+            }
+            if (any && fm1_ms - t_radar >= 40u) { t_radar = fm1_ms; for (k = 0; k < DRUMS_NPAD; k++) if (padhit[k]) padhit[k]--; }
+        }
+        if (engine_val() == 1u && fm1_ms - t_radar >= 45u) {            /* the radar: the sweep turns with the LFO rate */
             t_radar = fm1_ms;
             sw = (sw + 2u + (uint32_t)val[SIREN_P + SIREN_RATE] * 10u / 127u) % 360u;
             draw_radar(sw);
         }
         if ((st = cur | modified << 8 | (fm1_ms < msg_until ? 1u << 9 : 0u) | engine_val() << 10) != pl_sig) { pl_sig = st; draw_preset(); }
         for (k = 0; k < 4u; k++)
-            if (drawn[k] != val[page_base(page) + k] || ((uint32_t)drawn[k] == 0xFFu)) { drawn[k] = val[page_base(page) + k]; draw_row(k, page_base(page) + k); }
+            if (drawn[k] != val[page_param(page, k)] || ((uint32_t)drawn[k] == 0xFFu)) { drawn[k] = val[page_param(page, k)]; draw_row(k, page_param(page, k)); }
         if ((st = (uint32_t)(oct + 2) | (uint32_t)set.ch << 4 | midi_src << 12) != status_drawn) { status_drawn = st; draw_status(oct, set.ch, midi_src); }
         if (fm1_ms - t_dsp > 1000u) {            /* the DSP load: the longest block against its 5.8 ms */
             uint32_t us = dsp_peak, pc = us * 100u / 5805u;
