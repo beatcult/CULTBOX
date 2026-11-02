@@ -91,6 +91,8 @@ unsigned drums_render(drums_bank_t *b, int32_t *out)
 {
     float mix[DRUMS_FRAMES], master = (float)b->level * 0.01f, a, step;
     unsigned p, i, any = 0, rate_n = 1u + b->crush / 32u;
+    for (p = 0; p < DRUMS_NPAD && !b->v[p].active; p++) { }
+    if (p == DRUMS_NPAD) return 0;                                   /* nothing sounds: nothing to do */
     for (i = 0; i < DRUMS_FRAMES; i++) mix[i] = 0.0f;
     for (p = 0; p < DRUMS_NPAD; p++) {
         drum_voice_t *v = &b->v[p];

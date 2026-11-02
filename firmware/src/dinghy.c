@@ -161,23 +161,19 @@ static void app_audio(int32_t *out, uint32_t n)
         ev_tail = (uint8_t)((ev_tail + 1u) % RING);
     }
     for (blk = 0; blk + POLIVOKS_FRAMES <= n; blk += POLIVOKS_FRAMES) {
-        uint32_t gm = gain_of(mixv[3]), g;
+        uint32_t gm = gain_of(mixv[3]), g, any;
         for (i = 0; i < POLIVOKS_FRAMES; i++) left[i] = snd[i] = snd2[i] = 0;
         if (trk[0].q.run) seq_block(&trk[0].q, trk[0].buf[trk[0].live]);
         if (trk[1].q.run) seq_block(&trk[1].q, trk[1].buf[trk[1].live]);
-        for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0;
-        drums_render(drums, tmp);
-        g = gain_of(mixv[0]) * gm >> 7; mix_in(0, g, g * mixv[4] >> 7, snd);
-        for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0;
-        polivoks_bank_render(bank, tmp);
-        g = gain_of(mixv[1]) * gm >> 7; mix_in(1, g, g * mixv[5] >> 7, snd);
-        for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0;
-        dubsiren_render(siren, tmp);
-        g = gain_of(mixv[2]) * gm >> 7; mix_in(2, g, g * mixv[6] >> 7, snd2);   /* DUBMARINE has its own echo */
+        any = 0;
+        if (drums_render(drums, tmp)) { g = gain_of(mixv[0]) * gm >> 7; mix_in(0, g, g * mixv[4] >> 7, snd); any = 1; for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0; }
+        if (polivoks_bank_render(bank, tmp)) { g = gain_of(mixv[1]) * gm >> 7; mix_in(1, g, g * mixv[5] >> 7, snd); any = 1; for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0; }
+        if (dubsiren_render(siren, tmp)) { g = gain_of(mixv[2]) * gm >> 7; mix_in(2, g, g * mixv[6] >> 7, snd2); any = 1; for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0; }   /* (DUBMARINE has its own echo) */
         for (i = 0; i < POLIVOKS_FRAMES; i++) right[i] = left[i];
         polivoks_fx_tempo(trk[0].q.sync && trk[0].q.est > 0.0f ? trk[0].q.est * 24.0f : 2646000.0f / (float)(trk[0].q.tempo + 40u));   /* samples a beat */
-        polivoks_fx_process(0u, snd, left, right);
-        polivoks_fx_process(1u, snd2, left, right);
+        any |= polivoks_fx_process(0u, snd, left, right);
+        any |= polivoks_fx_process(1u, snd2, left, right);
+        if (!any) continue;                                        /* silence in, silence out: nothing to add */
         for (i = 0; i < POLIVOKS_FRAMES; i++) {   /* Q23 -> Q15, held short of the rails */
             int32_t l = left[i] >> 8, r = right[i] >> 8;
             l = l > 32767 ? 32767 : l < -32768 ? -32768 : l;

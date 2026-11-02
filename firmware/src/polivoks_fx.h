@@ -19,5 +19,5 @@ void polivoks_fx_set(unsigned unit, unsigned parameter, unsigned value);
 void polivoks_fx_sync(unsigned unit, unsigned on, unsigned note);
 void polivoks_fx_tempo(float samples_per_beat);
 /* Reads 128 mono samples (Q23), adds the echo to left/right (Q23, 128 samples each). */
-void polivoks_fx_process(unsigned unit, const int32_t *in, int32_t *left, int32_t *right);
+unsigned polivoks_fx_process(unsigned unit, const int32_t *in, int32_t *left, int32_t *right);   /* 0: it was idle and added nothing */
 #endif

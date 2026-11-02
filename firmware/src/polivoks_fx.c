@@ -125,20 +125,20 @@ static inline float fx_tap(const fx_t *u, float len)
     float a = (float)buf[i0], b = (float)buf[(i0 + 1U) & DLY_MASK];
     return (a + f * (b - a)) * (1.0f / 32768.0f);
 }
-void polivoks_fx_process(unsigned unit, const int32_t *in, int32_t *left, int32_t *right)
+unsigned polivoks_fx_process(unsigned unit, const int32_t *in, int32_t *left, int32_t *right)
 {
     float peak = 0.0f;
     fx_t *f;
     int16_t *buf;
-    if (unit >= POLIVOKS_FX_UNITS) return;
+    if (unit >= POLIVOKS_FX_UNITS) return 0;
     f = &fxs[unit];
     buf = fx_buf[unit];
-    if (f->mix <= 0.0f) return;
+    if (f->mix <= 0.0f) return 0;
     for (unsigned i = 0; i < BLOCK; ++i) { float a = fx_absf((float)in[i]); if (a > peak) peak = a; }
     if (peak < 40.0f) { if (f->quiet < 100000U) ++f->quiet; } else f->quiet = 0;
     /* idle: silent input for long enough that every repeat has died away -> skip */
     if (f->quiet > 3000U && f->fb < 1.0f &&
-        f->quiet > (unsigned)(8.0f * (f->len / HALF) / (1.0f - f->fb * 0.99f) * 344.0f + 600.0f)) return;
+        f->quiet > (unsigned)(8.0f * (f->len / HALF) / (1.0f - f->fb * 0.99f) * 344.0f + 600.0f)) return 0;
 
     const float mix = f->mix;
     for (unsigned n = 0; n < BLOCK; n += 2) {
@@ -164,4 +164,5 @@ void polivoks_fx_process(unsigned unit, const int32_t *in, int32_t *left, int32_
         right[n] += (int32_t)(fx_clampf(r0, -1.0f, 1.0f) * (Q23 - 1.0f));
         right[n + 1] += (int32_t)(fx_clampf(wr, -1.0f, 1.0f) * (Q23 - 1.0f));
     }
+    return 1;
 }
