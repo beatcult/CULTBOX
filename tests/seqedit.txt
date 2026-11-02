@@ -1,6 +1,5 @@
 # SEQ: the HOME prompt and chords, bar copy, per-step edit on DRUMS then PLVKS
 200 enc 1 1
-400 enc 1 1
 600 btn 11
 800 keys 0x1
 850 keys 0
@@ -29,8 +28,7 @@
 2500 btnup 8
 2600 shot
 2700 btn 11
-2800 enc 1 -1
-2900 enc 1 -1
+2800 enc 1 1
 3000 btn 11
 3100 keys 0x1
 3150 keys 0

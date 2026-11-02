@@ -1,0 +1,28 @@
+# both sequencers play together: drums steps, then PLVKS notes, PLAY, and the dial moves away from the drums
+200 enc 1 1
+300 btn 11
+400 keys 0x1
+450 keys 0
+500 keys 0x80
+550 keys 0
+600 keys 0x4000
+650 keys 0
+700 keys 0x200000
+750 keys 0
+800 btn 11
+900 enc 1 1
+1000 btn 11
+1100 keys 0x1
+1150 keys 0
+1200 keys 0x2000
+1250 keys 0
+1300 keys 0x400000
+1350 keys 0
+1400 btn 11
+1500 enc 1 1
+1600 keys 0x10
+2000 btndown 12
+2050 btnup 12
+2100 keys 0
+3000 shot
+9000 end

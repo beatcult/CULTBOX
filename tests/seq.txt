@@ -1,6 +1,5 @@
 # DRUMS, SEQ mode: enter steps with the white keys, pick pads with the black keys, play, change page and length
 200 enc 1 1
-400 enc 1 1
 600 btn 11
 800 keys 0x1
 850 keys 0

@@ -1,6 +1,6 @@
 # SEQ: chance, slide and delay on the second page of a step's knobs (PLVKS), chance on DRUMS
-200 enc 1 -1
-400 enc 1 -1
+200 enc 1 1
+400 enc 1 1
 600 btn 11
 800 keys 0x1
 850 keys 0
@@ -27,8 +27,7 @@
 2000 btndown 12
 2050 btnup 12
 3200 shot
-5100 enc 1 1
-5200 enc 1 1
+5100 enc 1 -1
 5250 btn 11
 5300 keys 0x1
 5350 keys 0

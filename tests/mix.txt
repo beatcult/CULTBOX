@@ -1,0 +1,20 @@
+# the mix page: boot on it, play drums and PLVKS and DUBMARINE at once, turn the volumes, the echo sends
+100 shot
+200 enc 1 1
+250 enc 1 1
+300 keys 0x80
+2000 keys 0
+2100 enc 1 1
+2150 keys 0x400
+2600 keys 0
+2700 enc 1 -1
+2750 enc 1 -1
+2800 enc 1 -1
+3000 enc 2 -20
+3050 enc 3 10
+3100 enc 4 -30
+3200 shot
+3300 enc 0 1
+3400 enc 2 -9
+3500 shot
+5000 end
