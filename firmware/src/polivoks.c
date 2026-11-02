@@ -36,7 +36,7 @@ static const char *const wave_names[] = {"Tri", "Saw", "Pls 50", "Pls 30", "Pls 
 static const char *const mode_names[] = {"LP", "BP"};
 static const char *const lfo_shapes[] = {"Tri", "Sqr", "Step", "Noise"};
 static const char *const loop_names[] = {"Off", "Filter", "Amp", "Both"};
-static const char *const voice_names[] = {"Mono", "Duo"};
+static const char *const voice_names[] = {"Mono", "Duo", "Unison"};
 static const char *const gate_names[] = {"Off", "On"};
 static const fm1_param_t parameters[POLIVOKS_NPARAMS] = {
     {"Cutoff", 127, 62, 0}, {"Reso", 127, 78, 0}, {"Mode", 1, 0, mode_names}, {"EnvAmt", 127, 70, 0},
@@ -46,7 +46,7 @@ static const fm1_param_t parameters[POLIVOKS_NPARAMS] = {
     {"F.Atk", 127, 2, 0}, {"F.Dec", 127, 60, 0}, {"F.Ped", 127, 30, 0}, {"F.Rel", 127, 40, 0},
     {"LfoRate", 127, 60, 0}, {"LfoWave", 3, 0, lfo_shapes}, {"LFO>Osc1", 127, 0, 0}, {"LFO>Osc2", 127, 0, 0},
     {"LFO>Filt", 127, 0, 0}, {"LFO>Amp", 127, 0, 0}, {"Noise", 127, 0, 0}, {"Drive", 127, 70, 0},
-    {"Voices", 1, 1, voice_names}, {"Gate", 1, 0, gate_names}, {"Glide", 127, 0, 0}, {"Loop", 3, 0, loop_names}};
+    {"Voices", 2, 1, voice_names}, {"Gate", 1, 0, gate_names}, {"Glide", 127, 0, 0}, {"Loop", 3, 0, loop_names}};
 
 const fm1_param_t *polivoks_param(int p) { return (unsigned)p < POLIVOKS_NPARAMS ? parameters + p : 0; }
 size_t polivoks_bank_size(void) { return sizeof(struct polivoks_bank); }
@@ -300,8 +300,9 @@ unsigned polivoks_bank_render(polivoks_bank_t *b, int32_t *out)
         if (!(b->chunks & 31)) { b->dt1 = noise(&b->rng) * 5.0f; b->dt2 = noise(&b->rng) * 5.0f; }
         b->drift1 += (b->dt1 - b->drift1) * 0.02f;
         b->drift2 += (b->dt2 - b->drift2) * 0.02f;
-        float s1 = b->pitch1 + b->ofs1 + bend + lfo * (b->d1 + wheel) + b->drift1 * 0.01f;
-        float s2 = b->pitch2 + b->ofs2 + b->detune + bend + lfo * (b->d2 + wheel) + b->drift2 * 0.01f;
+        float du = b->pot[POLIVOKS_VOICES] == POLIVOKS_UNISON ? b->detune * 0.5f : 0.0f;      /* unison: the detune either side of the note */
+        float s1 = b->pitch1 + b->ofs1 - du + bend + lfo * (b->d1 + wheel) + b->drift1 * 0.01f;
+        float s2 = b->pitch2 + b->ofs2 + b->detune - du + bend + lfo * (b->d2 + wheel) + b->drift2 * 0.01f;
         float inc1 = clampf(8.175799f * pv_exp2(s1 * (1.0f / 12.0f)) * (1.0f / SR), 1e-5f, 0.45f);
         float inc2 = clampf(8.175799f * pv_exp2(s2 * (1.0f / 12.0f)) * (1.0f / SR), 1e-5f, 0.45f);
         /* the filter: its cutoff follows its envelope and the modulator, never the keys */

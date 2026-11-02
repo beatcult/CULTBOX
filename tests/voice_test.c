@@ -41,6 +41,10 @@ int main(void)
     polivoks_bank_set(B, POLIVOKS_VOICES, POLIVOKS_MONO); render(100, &pk, &zc);
     render(200, &pk, &zc);
     CHECK(zc > zc1 * 1.6 && zc < zc1 * 2.4, "mono: both oscillators play the last note (one pitch, an octave up)");
+    polivoks_bank_set(B, POLIVOKS_VOICES, POLIVOKS_UNISON); polivoks_bank_set(B, POLIVOKS_DETUNE, 90); render(100, &pk, &zc);
+    rms = render(200, &pk, &zc);
+    CHECK(rms > 0.02 && pk < 0.95 && zc > zc1 * 1.4 && zc < zc1 * 2.8, "unison: both oscillators on the last note, the detune spread either side");
+    polivoks_bank_set(B, POLIVOKS_DETUNE, 64); polivoks_bank_set(B, POLIVOKS_VOICES, POLIVOKS_MONO);
     /* release to idle */
     polivoks_bank_note(B, 60, 0, 0); polivoks_bank_note(B, 48, 0, 0);
     int idle = 0; for (int k = 0; k < 2000 && !idle; ++k) { render(1, &pk, &zc); idle = !polivoks_bank_active(B); }

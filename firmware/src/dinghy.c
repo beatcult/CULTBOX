@@ -432,19 +432,28 @@ static uint32_t step_tap(uint32_t step)         /* a tap on a step: drums off / 
     touch_pat();
     return on;
 }
-static void edit_enter(uint32_t step)           /* hold a step, press EDIT: its knobs. An empty step is switched on first */
+static void plvks_blank(seq_note_t *r)         /* what a PLVKS step that was never set shows and starts as */
 {
-    uint8_t *pat = PAT;
-    if (bank_kind == SEQ_KIND_DRUMS) {
-        if (!seq_get(pat, step, val[DSEL_P])) { seq_put(pat, step, val[DSEL_P], 1); touch_pat(); }
+    r->on = 0; r->n1 = (uint8_t)last_step_note; r->has2 = 0; r->n2 = 0; r->len = 12; r->delay = 0; r->slide = 0; r->chance = 15; r->amp = (uint8_t)val[sqi(SEQ_HIT)];
+}
+static void browse_to(uint32_t step, uint32_t sound)   /* EDIT: the cursor on a step, its knobs live; SELECT and the white keys move it */
+{
+    uint32_t last = 16u * (val[sqi(SEQ_LEN)] + 1u) - 1u;
+    const uint8_t *pat = PAT;
+    if (step > last) step = last;
+    if (stepedit < 0) sfpage = 0;
+    stepedit = (int32_t)step;
+    seqview = (uint8_t)(step / 16u);
+    pat_ver++;
+    if (!sound) return;
+    if (bank_kind == SEQ_KIND_DRUMS) {                   /* (what is on the step sounds as the cursor passes) */
+        uint32_t sv = seq_get(pat, step, val[DSEL_P]);
+        if (sv) audition(drums_note_of_pad(val[DSEL_P]), 255u, sv == 2u ? val[sqi(SEQ_ACC)] : val[sqi(SEQ_HIT)]);
     } else {
         seq_note_t r;
         seq_note_get(pat, step, &r);
-        if (!r.on) step_tap(step);
+        if (r.on) audition(r.n1, r.has2 ? r.n2 : 255u, r.amp);
     }
-    if (stepedit < 0) sfpage = 0;
-    stepedit = (int32_t)step;
-    pat_ver++;
 }
 /* the edited step's values, four a page. DRUMS: page 1 pitch (half semitones), velocity, delay, ratchet; page 2 chance.
  * PLVKS: page 1 note 1, note 2 (0: none), length, velocity; page 2 chance, slide, delay. (Knobs with nothing on them read 0..0.) */
@@ -462,6 +471,7 @@ static void sf_get(uint32_t k, int32_t *v, int32_t *mn, int32_t *mx)
     } else {
         seq_note_t r;
         seq_note_get(pat, step, &r);
+        if (!r.on && !r.amp) plvks_blank(&r);
         if (i < 4u) { *v = i == 0 ? r.n1 : i == 1u ? (r.has2 ? (int32_t)r.n2 + 1 : 0) : i == 2u ? r.len : r.amp; *mn = i == 3u ? 1 : 0; *mx = i == 0 ? 127 : i == 1u ? 128 : i == 2u ? 15 : 127; }
         else if (i == 4u) { *v = r.chance; *mx = 15; }
         else if (i == 5u) { *v = r.slide; *mx = 1; }
@@ -483,6 +493,7 @@ static void sf_set(uint32_t k, int32_t v)
     } else {
         seq_note_t r;
         seq_note_get(pat, step, &r);
+        if (!r.on && !r.amp) plvks_blank(&r);
         r.on = 1;
         if (i == 0) { r.n1 = (uint8_t)v; last_step_note = (uint32_t)v; }
         else if (i == 1u) { r.has2 = v > 0; r.n2 = (uint8_t)(v > 0 ? v - 1 : 0); }
@@ -798,6 +809,50 @@ static void draw_notegrid(void)                 /* SEQ on PLVKS: twelve note nam
         }
     }
     if (stepedit >= 0 && (uint32_t)stepedit / 16u == seqview) frame_col((uint32_t)stepedit % 16u);
+    cv_blit(0, 60);
+}
+static void draw_stepmap(void)                  /* SEQ, browsing: a dot a step (8 x 8, so a bar is two rows), the pattern's own lit, the cursor ringed */
+{
+    uint32_t i, pd, n = 16u * (val[sqi(SEQ_LEN)] + 1u), run = TK.q.run, pos = TK.q.pos, cur = (uint32_t)stepedit, drums = bank_kind == SEQ_KIND_DRUMS, sv, other;
+    const uint8_t *st = PAT;
+    char t[24];
+    uint32_t o;
+    seq_note_t r;
+    cv_begin(240, 100, C_BLACK);
+    for (i = 0; i < 64u; i++) {
+        int32_t cx = (8 + (int32_t)(i % 8u) * 12 + 6) * 4, cy = ((int32_t)(i / 8u) * 12 + 6) * 4;
+        uint16_t col;
+        if (i >= n) { ui_disc(cx, cy, 4, RGB(30, 18, 7)); continue; }          /* past the end of the pattern: a speck */
+        sv = 0; other = 0;
+        if (drums) { sv = seq_get(st, i, val[DSEL_P]); for (pd = 0; pd < DRUMS_NPAD; pd++) if (seq_get(st, i, pd)) other = 1; }
+        else { seq_note_get(st, i, &r); sv = r.on; other = sv; }
+        col = sv == 2u ? C_WHITE : sv ? C_DR : other ? RGB(120, 70, 24) : ((i >> 4) & 1u) ? RGB(64, 38, 14) : RGB(82, 50, 18);
+        ui_disc(cx, cy, sv ? 20 : other ? 16 : 14, col);
+        if (run && i == pos) ui_ring(cx, cy, 24, 4, RGB(255, 235, 170));
+        if (i == cur) ui_ring(cx, cy, 28, 6, C_WHITE);
+    }
+    o = 0; t[o++] = 'S'; t[o++] = 'T'; t[o++] = 'E'; t[o++] = 'P'; t[o++] = ' ';
+    put_num(t + o, cur + 1u); while (t[o]) o++;
+    t[o++] = '/'; put_num(t + o, n);
+    cv_text(112, 4, &FONT_S, t, C_DRL);
+    o = 0; t[o++] = 'B'; t[o++] = 'A'; t[o++] = 'R'; t[o++] = ' ';
+    put_num(t + o, cur / 16u + 1u); while (t[o]) o++;
+    t[o++] = ' '; t[o++] = ' '; put_num(t + o, (cur % 16u) / 4u + 1u); while (t[o]) o++;
+    t[o++] = '.'; put_num(t + o, cur % 4u + 1u);
+    cv_text(112, 24, &FONT_S, t, C_DRL);
+    if (drums) {
+        sv = seq_get(st, cur, val[DSEL_P]);
+        cv_text(112, 44, &FONT_S, drums_names[val[DSEL_P]], C_DR);
+        cv_text(112, 64, &FONT_S, sv == 2u ? "ACCENT" : sv ? "HIT" : "OFF", sv ? C_WHITE : C_GREY);
+    } else {
+        seq_note_get(st, cur, &r);
+        o = 0;
+        if (r.on) { note_str(t, r.n1); while (t[o]) o++; if (r.has2) { t[o++] = ' '; t[o++] = '+'; t[o++] = ' '; note_str(t + o, r.n2); } } else { t[o++] = 'O'; t[o++] = 'F'; t[o++] = 'F'; }
+        t[o] = 0;
+        cv_text(112, 44, &FONT_S, t, r.on ? C_DR : C_GREY);
+        cv_text(112, 64, &FONT_S, r.on && r.slide ? "SLIDE" : r.on && r.chance < 15u ? "CHANCE" : "", C_WHITE);
+    }
+    cv_text(112, 82, &FONT_S, "EDIT: BACK", C_GREY);
     cv_blit(0, 60);
 }
 static void draw_row(unsigned row, unsigned p)
@@ -1157,10 +1212,15 @@ static void app_main(void)
             if (down >> k & 1u && seqmode) {         /* SEQ: white keys are steps (a tap on release), black keys pick the pad */
                 if (KEY_STEP[k] >= 0) {
                     held_k = (uint8_t)k; step_used = 0;
-                    if (stepedit >= 0) { edit_enter((uint32_t)seqview * 16u + (uint32_t)KEY_STEP[k]); step_used = 1; }   /* editing: the next step */
+                    if (stepedit >= 0) {                                  /* browsing: a key moves the cursor; the key at the cursor again switches the step */
+                        uint32_t sp = (uint32_t)seqview * 16u + (uint32_t)KEY_STEP[k];
+                        if ((int32_t)sp == stepedit) step_tap(sp); else browse_to(sp, 1);
+                        step_used = 1;
+                    }
                 } else if (KEY_PAD[k] >= 0 && KEY_PAD[k] < (int)DRUMS_NPAD && engine_val() == 2u) {
-                    set_param(DSEL_P, (unsigned)KEY_PAD[k]); pat_ver++; ui_reset = 1; stepedit = -1;
-                    play(drums_note_of_pad((uint32_t)KEY_PAD[k]), 100); stop(drums_note_of_pad((uint32_t)KEY_PAD[k]));
+                    set_param(DSEL_P, (unsigned)KEY_PAD[k]); pat_ver++; ui_reset = 1;
+                    if (stepedit >= 0) step_tap((uint32_t)stepedit);       /* browsing: the pad's button sets that pad on this step (off, hit, accent) */
+                    else { play(drums_note_of_pad((uint32_t)KEY_PAD[k]), 100); stop(drums_note_of_pad((uint32_t)KEY_PAD[k])); }
                 }
             } else if (down >> k & 1u) {
                 held[k] = engine_val() == 2u ? (k < DRUMS_NPAD ? (uint8_t)drums_note_of_pad(k) : 0u) : (uint8_t)(base + k);   /* DRUMS: the first ten keys are the pads */
@@ -1180,8 +1240,13 @@ static void app_main(void)
         b = fm1_input_edges(&rel);
         home = fm1_in.buttons >> BTN_HOME & 1u;
         if (seqmode) {                             /* SEQ: OCT- OCT+ turn the page of 16 steps */
-            if (b & (1u << BTN_OCT_DOWN) && seqview > 0) { seqview--; stepedit = -1; pat_ver++; }
-            if (b & (1u << BTN_OCT_UP) && seqview < val[sqi(SEQ_LEN)]) { seqview++; stepedit = -1; pat_ver++; }
+            if (stepedit >= 0) {                                         /* browsing: OCT- the notes' page of knobs, OCT+ the second (chance, slide, delay) */
+                if (b & (1u << BTN_OCT_DOWN)) { sfpage = 0; ui_reset = 1; pat_ver++; }
+                if (b & (1u << BTN_OCT_UP)) { sfpage = 1; ui_reset = 1; pat_ver++; }
+            } else {
+                if (b & (1u << BTN_OCT_DOWN) && seqview > 0) { seqview--; pat_ver++; }
+                if (b & (1u << BTN_OCT_UP) && seqview < val[sqi(SEQ_LEN)]) { seqview++; pat_ver++; }
+            }
         } else if (b & (1u << BTN_OCT_DOWN) && oct > -2) { set.oct = (uint8_t)(oct - 1); dirty = 1; t_change = fm1_ms; }
         if (!seqmode && b & (1u << BTN_OCT_UP) && oct < 2) { set.oct = (uint8_t)(oct + 1); dirty = 1; t_change = fm1_ms; }
         if ((e = fm1_enc_take(ENC_ALGORITHM)) != 0) {
@@ -1212,7 +1277,10 @@ static void app_main(void)
             if ((uint32_t)c != cur) { load_preset((uint32_t)c); if (mixview) { mixview = 0; page_drawn = ~0u; status_drawn = ~0u; dsp_drawn = ~0u; } dirty = 1; t_change = fm1_ms; }
         }
         if (b & (1u << BTN_SAVE)) { if (mixview) say("PICK A TRACK TO SAVE", 1200); else if (seqmode) { pattern_store(tsel(), cur_pat()); say("PATTERN SAVED", 1200); } else save_preset(); }
-        if ((e = fm1_enc_take(ENC_SELECT)) != 0 && seqmode && stepedit >= 0) { sfpage ^= 1u; ui_reset = 1; pat_ver++; }   /* editing a step: its other page of knobs */
+        if ((e = fm1_enc_take(ENC_SELECT)) != 0 && seqmode && stepedit >= 0) {   /* browsing: SELECT walks the steps (round the end) */
+            int32_t last = (int32_t)(16u * (val[sqi(SEQ_LEN)] + 1u)) - 1, c = stepedit + (e > 0 ? 1 : -1);
+            browse_to((uint32_t)(c < 0 ? last : c > last ? 0 : c), 1);
+        }
         else if (e != 0) {
             int32_t c = (int32_t)page + (e > 0 ? 1 : -1);
             page = (uint32_t)(c < 0 ? npage() - 1u : c >= (int32_t)npage() ? 0 : c);
@@ -1266,7 +1334,7 @@ static void app_main(void)
             }
         if (seqmode && b & (1u << BTN_EDIT)) {     /* EDIT: hold a step and press it for that step's four knobs; again to leave */
             if (stepedit >= 0) { stepedit = -1; pat_ver++; }
-            else if (held_k != 255u && KEY_STEP[held_k] >= 0) { edit_enter((uint32_t)seqview * 16u + (uint32_t)KEY_STEP[held_k]); step_used = 1; }
+            else { browse_to(held_k != 255u && KEY_STEP[held_k] >= 0 ? (uint32_t)seqview * 16u + (uint32_t)KEY_STEP[held_k] : (uint32_t)seqview * 16u, 0); step_used = 1; }
         }
         if (seqmode && home && b & (1u << BTN_ARP)) copy_bar();       /* HOME + ARP: this bar into the next */
         if (b & (1u << BTN_SEQ)) {
@@ -1324,8 +1392,8 @@ static void app_main(void)
         }
         for (k = 0; k < NSECTION; k++)
             fm1_led_key(SECTION[k].btn, !seqmode && !mixview && page >= SECTION[k].first && page < SECTION[k].first + SECTION[k].count);
-        fm1_led_key(BTN_OCT_DOWN, !seqmode && oct < 0);
-        fm1_led_key(BTN_OCT_UP, !seqmode && oct > 0);
+        fm1_led_key(BTN_OCT_DOWN, seqmode ? stepedit >= 0 && sfpage == 0 : oct < 0);
+        fm1_led_key(BTN_OCT_UP, seqmode ? stepedit >= 0 && sfpage == 1 : oct > 0);
         fm1_led_key(BTN_SEQ, seqmode);
         fm1_led_key(BTN_PLAY, trk[0].q.run);
 
@@ -1344,7 +1412,7 @@ static void app_main(void)
             uint32_t gs = pat_ver * 1000003u ^ (uint32_t)(stepedit + 1) * 65537u ^ (uint32_t)sfpage * 7u ^ bank_kind * 977u ^ (uint32_t)seqview * 7919u ^ val[DSEL_P] * 104729u ^ (TK.q.run ? ((uint32_t)TK.q.pos + 1u) * 31u : 0u);
             uint32_t hs = 1u | (uint32_t)sfpage << 24 | (uint32_t)seqview << 1 | val[sqi(SEQ_LEN)] << 4 | (TK.q.run ? ((uint32_t)TK.q.pos / 16u + 1u) << 8 : 0u) | (uint32_t)(stepedit + 1) << 16;
             if (page == page_drawn && hs != hsig) { hsig = hs; draw_header(page, 0); }
-            if (page == page_drawn && gs != gsig) { gsig = gs; if (engine_val() == 2u) draw_stepgrid(); else draw_notegrid(); }
+            if (page == page_drawn && gs != gsig) { gsig = gs; if (stepedit >= 0) draw_stepmap(); else if (engine_val() == 2u) draw_stepgrid(); else draw_notegrid(); }
         } else if (engine_val() == 2u) {                           /* the pad grid: a hit fades over about 0.3 s */
             uint32_t sig = val[DSEL_P], any = 0;
             for (k = 0; k < DRUMS_NPAD; k++) { sig = sig * 9u + padhit[k]; any |= padhit[k]; }

@@ -11,7 +11,7 @@
 1100 keys 0x10
 1150 btn 6
 1200 enc 2 8
-1250 enc 0 1
+1250 btn 1
 1300 enc 2 -6
 1350 enc 3 1
 1400 enc 4 5
@@ -20,7 +20,7 @@
 1650 btn 6
 1700 keys 0x4
 1750 btn 6
-1800 enc 0 1
+1800 btn 1
 1850 enc 3 1
 1900 keys 0
 1950 btn 6
@@ -33,7 +33,7 @@
 5350 keys 0
 5400 keys 0x1
 5450 btn 6
-5500 enc 0 1
+5500 btn 1
 5550 enc 2 -5
 5700 shot
 6000 end

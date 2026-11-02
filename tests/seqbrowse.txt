@@ -1,0 +1,41 @@
+# SEQ: EDIT with no step held browses: SELECT walks the steps, a black key sets that pad on the step, a white key moves the cursor
+200 enc 1 1
+300 btn 11
+400 keys 0x1
+450 keys 0
+500 keys 0x80
+550 keys 0
+600 enc 4 1
+700 btn 6
+800 enc 0 1
+850 enc 0 1
+900 enc 0 1
+950 enc 0 1
+1000 enc 0 1
+1050 enc 0 1
+1100 keys 0x2
+1150 keys 0
+1200 keys 0x8
+1250 keys 0
+1300 enc 0 1
+1400 shot
+1500 enc 0 1
+1550 enc 0 1
+1600 enc 0 1
+1650 enc 0 1
+1700 enc 0 1
+1800 shot
+1900 btn 6
+2000 btn 11
+2100 enc 1 1
+2200 btn 11
+2300 keys 0x1
+2350 keys 0
+2400 keys 0x400
+2450 keys 0
+2500 btn 6
+2600 enc 0 1
+2700 enc 0 1
+2800 enc 5 3
+2900 shot
+3000 end
