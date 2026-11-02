@@ -1,0 +1,19 @@
+# the two echoes: PLVKS's echo page and the sync page, DUBMARINE's own echo, sync on for both
+100 enc 1 1
+150 enc 1 1
+200 btn 2
+300 btn 2
+400 enc 2 1
+450 enc 3 1
+500 enc 4 1
+600 shot
+700 enc 1 1
+800 btn 2
+900 shot
+1000 btn 2
+1100 enc 4 1
+1200 enc 3 1
+1300 shot
+1400 keys 0x80
+2400 keys 0
+3000 end

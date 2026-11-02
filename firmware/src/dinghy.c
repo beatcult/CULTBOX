@@ -58,8 +58,10 @@ static uint32_t fm1_ticks(void) { return 0; }   /* (no counter on the computer: 
 #define SQ_P (DLEV_P + 4)                                      /* 84..91: the sequencer: tempo, swing, length, rate, pattern, sync, hit, accent (drumseq.h) */
 #define SQ2_P (SQ_P + SEQ_NPARAMS)                             /* 92..99: the PLVKS track's sequencer (its tempo, swing and sync are the drums' SQ_P ones) */
 #define MIX_P (SQ2_P + SEQ_NPARAMS)                            /* 100..106: volumes of drums, PLVKS, DUBMARINE; master; the three echo sends */
-#define NPARAM (MIX_P + 7u)
-#define MAXPAGE 9
+#define FX2_P (MIX_P + 7u)                                     /* 107..110: DUBMARINE's own echo: time, feedback, tone, echo */
+#define FXS_P (FX2_P + POLIVOKS_FX_PARAMS)                     /* 111..114: tempo sync: echo 1 (drums, PLVKS) sync and note value, echo 2 (DUBMARINE) sync and note value */
+#define NPARAM (FXS_P + 4u)
+#define MAXPAGE 10
 
 /* ---- the sound (audio ISR): events from the main loop, one writer each side */
 enum { EV_NOTE, EV_PEDAL, EV_BEND, EV_MOD, EV_PARAM, EV_PANIC, EV_SEQ };
@@ -69,7 +71,7 @@ static event_t ring[RING];
 static volatile uint8_t ev_head, ev_tail, ready;
 static uint32_t bank_store[POLIVOKS_BANK_BYTES / 4], siren_store[DUBSIREN_BANK_BYTES / 4], drums_store[DRUMS_BANK_BYTES / 4];
 static volatile uint8_t engine;                 /* the engine that sounds: 0 PLVKS, 1 DUBMARINE, 2 DRUMS (the ISR's copy of ENGINE_P) */
-static int32_t tmp[POLIVOKS_FRAMES], snd[POLIVOKS_FRAMES], left[POLIVOKS_FRAMES], right[POLIVOKS_FRAMES];
+static int32_t tmp[POLIVOKS_FRAMES], snd[POLIVOKS_FRAMES], snd2[POLIVOKS_FRAMES], left[POLIVOKS_FRAMES], right[POLIVOKS_FRAMES];
 static volatile uint32_t dsp_peak;               /* the longest audio block since the main loop last looked, in us */
 static uint8_t val[NPARAM];                     /* the values on the panel */
 static uint32_t engine_val(void) { return val[ENGINE_P]; }
@@ -94,13 +96,14 @@ typedef struct {                                /* a sequenced track: 0 drums, 1
     uint8_t dirty; uint32_t dirty_t;
 } trk_t;
 static trk_t trk[2];
-static volatile uint8_t mixv[7];                /* MIX_P: volumes of drums, PLVKS, DUBMARINE; master; echo sends */
+static volatile uint8_t mixv[7];
+static uint8_t fxsync[4] = {0, 5, 0, 5};         /* the echoes' sync and note value (ISR's copy of FXS_P) */                /* MIX_P: volumes of drums, PLVKS, DUBMARINE; master; echo sends */
 static volatile uint16_t tpeak[3];              /* the loudest sample of each channel (Q15) since the main loop last looked */
 static void apply(unsigned p, unsigned v)       /* ISR side */
 {
     if (p < NVOICEPARAM) polivoks_bank_set((polivoks_bank_t *)bank_store, p, v);
     else if (p < FX_P) dubsiren_set((dubsiren_bank_t *)siren_store, p - SIREN_P, v);
-    else if (p < ENGINE_P) polivoks_fx_set(p - FX_P, v);
+    else if (p < ENGINE_P) polivoks_fx_set(0u, p - FX_P, v);
     else if (p == ENGINE_P) engine = (uint8_t)v;                 /* the track the keys play: all of them sound */
     else if (p < DSEL_P) drums_set((drums_bank_t *)drums_store, p - PADP_P, v);
     else if (p == DSEL_P) { }
@@ -111,11 +114,13 @@ static void apply(unsigned p, unsigned v)       /* ISR side */
         if (k == SEQ_TEMPO || k == SEQ_SWING || k == SEQ_SYNC) seq_set(&trk[1].q, k, v);     /* one tempo for both */
     }
     else if (p < MIX_P) seq_set(&trk[1].q, p - SQ2_P, v);
-    else mixv[p - MIX_P] = (uint8_t)v;
+    else if (p < FX2_P) mixv[p - MIX_P] = (uint8_t)v;
+    else if (p < FXS_P) polivoks_fx_set(1u, p - FX2_P, v);
+    else { unsigned u = (p - FXS_P) >> 1; fxsync[p - FXS_P] = (uint8_t)v; polivoks_fx_sync(u, fxsync[u * 2u], fxsync[u * 2u + 1u]); }
 }
 
 static uint32_t gain_of(uint32_t v) { return v * v / 127u; }        /* a volume knob: a gentle curve, 0..127 */
-static void mix_in(uint32_t c, uint32_t g, uint32_t gs)                /* tmp into the dry bus and the echo's send bus, g and gs 0..127 */
+static void mix_in(uint32_t c, uint32_t g, uint32_t gs, int32_t *bus)   /* tmp into the dry bus and an echo's send bus, g and gs 0..127 */
 {
     uint32_t i, pk = 0;
     for (i = 0; i < POLIVOKS_FRAMES; i++) {
@@ -125,7 +130,7 @@ static void mix_in(uint32_t c, uint32_t g, uint32_t gs)                /* tmp in
         a = (uint32_t)(x < 0 ? -x : x);
         if (a > pk) pk = a;
         left[i] += (x * (int32_t)g) >> 7;
-        snd[i] += (x * (int32_t)gs) >> 7;
+        bus[i] += (x * (int32_t)gs) >> 7;
     }
     pk >>= 8;
     if (pk > 32767u) pk = 32767u;
@@ -157,20 +162,22 @@ static void app_audio(int32_t *out, uint32_t n)
     }
     for (blk = 0; blk + POLIVOKS_FRAMES <= n; blk += POLIVOKS_FRAMES) {
         uint32_t gm = gain_of(mixv[3]), g;
-        for (i = 0; i < POLIVOKS_FRAMES; i++) left[i] = snd[i] = 0;
+        for (i = 0; i < POLIVOKS_FRAMES; i++) left[i] = snd[i] = snd2[i] = 0;
         if (trk[0].q.run) seq_block(&trk[0].q, trk[0].buf[trk[0].live]);
         if (trk[1].q.run) seq_block(&trk[1].q, trk[1].buf[trk[1].live]);
         for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0;
         drums_render(drums, tmp);
-        g = gain_of(mixv[0]) * gm >> 7; mix_in(0, g, g * mixv[4] >> 7);
+        g = gain_of(mixv[0]) * gm >> 7; mix_in(0, g, g * mixv[4] >> 7, snd);
         for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0;
         polivoks_bank_render(bank, tmp);
-        g = gain_of(mixv[1]) * gm >> 7; mix_in(1, g, g * mixv[5] >> 7);
+        g = gain_of(mixv[1]) * gm >> 7; mix_in(1, g, g * mixv[5] >> 7, snd);
         for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0;
         dubsiren_render(siren, tmp);
-        g = gain_of(mixv[2]) * gm >> 7; mix_in(2, g, g * mixv[6] >> 7);
+        g = gain_of(mixv[2]) * gm >> 7; mix_in(2, g, g * mixv[6] >> 7, snd2);   /* DUBMARINE has its own echo */
         for (i = 0; i < POLIVOKS_FRAMES; i++) right[i] = left[i];
-        polivoks_fx_process(snd, left, right);
+        polivoks_fx_tempo(trk[0].q.sync && trk[0].q.est > 0.0f ? trk[0].q.est * 24.0f : 2646000.0f / (float)(trk[0].q.tempo + 40u));   /* samples a beat */
+        polivoks_fx_process(0u, snd, left, right);
+        polivoks_fx_process(1u, snd2, left, right);
         for (i = 0; i < POLIVOKS_FRAMES; i++) {   /* Q23 -> Q15, held short of the rails */
             int32_t l = left[i] >> 8, r = right[i] >> 8;
             l = l > 32767 ? 32767 : l < -32768 ? -32768 : l;
@@ -206,6 +213,8 @@ static volatile uint32_t selftest_expect = 4571585u;   /* (not a constant in the
 /* ---- parameters: names, ranges, defaults */
 static const fm1_param_t FXP[POLIVOKS_FX_PARAMS] = {
     {"Time", 127, 0, 0}, {"Feedbk", 127, 0, 0}, {"Tone", 127, 0, 0}, {"Echo", 127, 0, 0}};
+static const char *const SYNC_ECHO[] = {"Free", "Tempo"}, *const NOTE_VALUES[] = {"1/32", "1/16T", "1/16", "1/8T", "1/16.", "1/8", "1/4T", "1/8.", "1/4", "1/2T", "1/4.", "1/2"};
+static const fm1_param_t FXSP[4] = {{"Sync 1", 1, 0, SYNC_ECHO}, {"Note 1", 11, 5, NOTE_VALUES}, {"Sync 2", 1, 0, SYNC_ECHO}, {"Note 2", 11, 5, NOTE_VALUES}};
 static const char *const ENGINE_NAMES[] = {"PLVKS", "DUBMARINE", "DRUMS"};
 static const fm1_param_t MIXP[7] = {{"Drums", 127, 110, 0}, {"PLVKS", 127, 110, 0}, {"Dub", 127, 110, 0}, {"Master", 127, 127, 0},
                                     {"Send 1", 127, 127, 0}, {"Send 2", 127, 127, 0}, {"Send 3", 127, 127, 0}};
@@ -221,29 +230,29 @@ static const fm1_param_t *param(unsigned p)
 {
     return p < NVOICEPARAM ? polivoks_param((int)p) : p < FX_P ? dubsiren_param((int)(p - SIREN_P))
          : p < ENGINE_P ? &FXP[p - FX_P] : p == ENGINE_P ? &ENGP : p < DSEL_P ? &PADP[(p - PADP_P) % DRUM_PADPARAMS]
-         : p == DSEL_P ? &dselp : p < SQ_P ? &DGLOBP[p - DLEV_P] : p < SQ2_P ? &SQP[p - SQ_P] : p < MIX_P ? &SQP[p - SQ2_P] : &MIXP[p - MIX_P];
+         : p == DSEL_P ? &dselp : p < SQ_P ? &DGLOBP[p - DLEV_P] : p < SQ2_P ? &SQP[p - SQ_P] : p < MIX_P ? &SQP[p - SQ2_P] : p < FX2_P ? &MIXP[p - MIX_P] : p < FXS_P ? &FXP[p - FX2_P] : &FXSP[p - FXS_P];
 }
 /* pages: the first parameter of each (four to a page), per engine */
-static const uint8_t PV_PAGE[9] = {0, 4, 8, 12, 16, 20, 24, 28, FX_P};
-static const char *const PV_TITLE[9] = {"FILTER", "OSCILLATOR 1", "OSCILLATOR 2", "AMP ENVELOPE", "FILTER ENV",
-                                        "LFO", "MOD AND DRIVE", "PLAY", "BBD ECHO"};
-static const uint8_t SI_PAGE[4] = {SIREN_P, SIREN_P + 4, SIREN_P + 8, FX_P};
-static const char *const SI_TITLE[4] = {"PITCH LFO", "FILTER", "PLAY", "BBD ECHO"};
-static const char *const DR_TITLE[3] = {"PAD", "MIX", "BBD ECHO"}, *const SQ_TITLE[2] = {"TIMING", "PATTERN"};
+static const uint8_t PV_PAGE[10] = {0, 4, 8, 12, 16, 20, 24, 28, FX_P, FXS_P};
+static const char *const PV_TITLE[10] = {"FILTER", "OSCILLATOR 1", "OSCILLATOR 2", "AMP ENVELOPE", "FILTER ENV",
+                                        "LFO", "MOD AND DRIVE", "PLAY", "BBD ECHO", "ECHO SYNC"};
+static const uint8_t SI_PAGE[5] = {SIREN_P, SIREN_P + 4, SIREN_P + 8, FX2_P, FXS_P};
+static const char *const SI_TITLE[5] = {"PITCH LFO", "FILTER", "PLAY", "BBD ECHO", "ECHO SYNC"};
+static const char *const DR_TITLE[4] = {"PAD", "MIX", "BBD ECHO", "ECHO SYNC"}, *const SQ_TITLE[2] = {"TIMING", "PATTERN"};
 static uint8_t sfpage;                           /* its page of knobs: 0 the notes, 1 chance, slide, delay */
 static int32_t stepedit = -1;                    /* SEQ: the step whose notes or hit the four knobs edit (hold a step, press EDIT), or -1 */
 static uint8_t seqmode, seqview, mixview = 1;   /* mixview: the mix page (the ALGORITHM dial's first stop) */
 static uint32_t mixpg;
                 /* SEQ mode (DRUMS only) and the page of 16 steps on show */
 static uint32_t seqpg;                           /* the knob page in SEQ mode */
-static uint32_t npage(void) { return mixview ? 2u : seqmode ? 2u : engine_val() == 2u ? 3u : engine_val() ? 4u : 9u; }
+static uint32_t npage(void) { return mixview ? 2u : seqmode ? 2u : engine_val() == 2u ? 4u : engine_val() ? 5u : 10u; }
 static uint32_t page_base(uint32_t page) { return engine_val() ? SI_PAGE[page] : PV_PAGE[page]; }
 static const char *page_title(uint32_t page) { return seqmode ? SQ_TITLE[page] : engine_val() == 2u ? DR_TITLE[page] : engine_val() ? SI_TITLE[page] : PV_TITLE[page]; }
 static uint32_t page_param(uint32_t page, uint32_t k)       /* the k-th parameter on the page (the PAD page edits the selected pad) */
 {
     if (mixview) return page == 0 ? MIX_P + k : (k < 3u ? MIX_P + 4u + k : FX_P + 3u);
     if (seqmode) return sqi(page * 4u + k);
-    if (engine_val() == 2u) return page == 0 ? (k == 0 ? DSEL_P : PADP_P + val[DSEL_P] * DRUM_PADPARAMS + k - 1u) : page == 1 ? DLEV_P + k : FX_P + k;
+    if (engine_val() == 2u) return page == 0 ? (k == 0 ? DSEL_P : PADP_P + val[DSEL_P] * DRUM_PADPARAMS + k - 1u) : page == 1 ? DLEV_P + k : page == 2 ? FX_P + k : FXS_P + k;
     return page_base(page) + k;
 }
 
@@ -278,7 +287,7 @@ static void defaults_sel(void)                  /* HOME: the selected track's so
     if (e == 0u) for (p = 0; p < NVOICEPARAM; p++) val[p] = polivoks_param((int)p)->def;
     else if (e == 1u) for (p = 0; p < SIREN_NPARAMS; p++) val[SIREN_P + p] = dubsiren_param((int)p)->def;
     else for (p = PADP_P; p < SQ_P; p++) val[p] = param(p)->def;
-    for (p = 0; p < POLIVOKS_FX_PARAMS; p++) val[FX_P + p] = polivoks_fx_default[p];
+    for (p = 0; p < POLIVOKS_FX_PARAMS; p++) val[(e == 1u ? FX2_P : FX_P) + p] = polivoks_fx_default[p];     /* (DUBMARINE's echo is its own) */
 }
 
 /* ---- presets: NFACTORY in the code, NUSER in flash (blob 0, one sector: saved on SAVE) */
@@ -303,12 +312,13 @@ static void load_preset(uint32_t i)             /* main loop, or MIDI program ch
     lo = pe == 0u ? 0u : pe == 1u ? SIREN_P : FX_P;                     /* (the drums' kit preset has no voice values) */
     hi = pe == 0u ? SIREN_P : pe == 1u ? FX_P : FX_P;
     for (p = lo; p < hi; p++) val[p] = src[p];
-    for (p = FX_P; p < ENGINE_P; p++) val[p] = src[p];
+    for (p = FX_P; p < ENGINE_P; p++) val[(pe == 1u ? FX2_P - FX_P : 0u) + p] = src[p];      /* (a DUBMARINE preset's echo is DUBMARINE's) */
     val[ENGINE_P] = (uint8_t)pe;
     for (p = 0; p < PRESET_N; p++) {
         if (val[p] > param(p)->max) val[p] = param(p)->max;
         push(EV_PARAM, (uint8_t)p, val[p], 0);
     }
+    if (pe == 1u) for (p = FX2_P; p < FXS_P; p++) push(EV_PARAM, (uint8_t)p, val[p], 0);
     cur = i; modified = 0; ui_reset = 1; msg_until = 0;
     if (val[ENGINE_P] == 1u) seqmode = 0;       /* (the siren has no sequencer) */
     stepedit = -1;
@@ -329,6 +339,7 @@ static void save_preset(void)                   /* SAVE: into the selected user 
     else for (k = 0; k < NUSER; k++) if (!ubank.used[k]) { slot = k; break; }
     if (slot >= NUSER) { say("BANK FULL", 1500); return; }
     for (k = 0; k < PRESET_N; k++) ubank.p[slot][k] = val[k];
+    if (val[ENGINE_P] == 1u) for (k = 0; k < POLIVOKS_FX_PARAMS; k++) ubank.p[slot][FX_P + k] = val[FX2_P + k];   /* (a DUBMARINE preset keeps its own echo) */
     ubank.used[slot] = 1;
     if (blob_save(0, &ubank, sizeof ubank)) { say("SAVE FAILED", 2000); return; }
     cur = NFACTORY + slot; modified = 0;
@@ -1027,11 +1038,11 @@ static void app_idle(void)
 /* the panel's section buttons: the first page of the section and how many pages it has */
 typedef struct { uint8_t btn, first, count; } section_t;
 static const section_t SECTION_PV[] = {
-    {BTN_SEL, 0, 1}, {BTN_EDIT, 1, 2}, {BTN_ENV, 3, 2}, {BTN_LFO, 5, 2}, {BTN_GLO, 7, 1}, {BTN_FX, 8, 1}};
+    {BTN_SEL, 0, 1}, {BTN_EDIT, 1, 2}, {BTN_ENV, 3, 2}, {BTN_LFO, 5, 2}, {BTN_GLO, 7, 1}, {BTN_FX, 8, 2}};
 static const section_t SECTION_SI[] = {
-    {BTN_SEL, 1, 1}, {BTN_EDIT, 0, 1}, {BTN_ENV, 2, 1}, {BTN_LFO, 0, 1}, {BTN_GLO, 2, 1}, {BTN_FX, 3, 1}};
+    {BTN_SEL, 1, 1}, {BTN_EDIT, 0, 1}, {BTN_ENV, 2, 1}, {BTN_LFO, 0, 1}, {BTN_GLO, 2, 1}, {BTN_FX, 3, 2}};
 static const section_t SECTION_DR[] = {
-    {BTN_SEL, 0, 1}, {BTN_EDIT, 1, 1}, {BTN_ENV, 0, 1}, {BTN_LFO, 1, 1}, {BTN_GLO, 1, 1}, {BTN_FX, 2, 1}};
+    {BTN_SEL, 0, 1}, {BTN_EDIT, 1, 1}, {BTN_ENV, 0, 1}, {BTN_LFO, 1, 1}, {BTN_GLO, 1, 1}, {BTN_FX, 2, 2}};
 #define NSECTION 6u
 static const section_t *sections(void) { return engine_val() == 2u ? SECTION_DR : engine_val() ? SECTION_SI : SECTION_PV; }
 
@@ -1146,20 +1157,26 @@ static void app_main(void)
     }
     defaults_all();
     for (p = SQ_P; p < NPARAM; p++) val[p] = param(p)->def;
+    for (k = 0; k < POLIVOKS_FX_PARAMS; k++) val[FX2_P + k] = polivoks_fx_default[k];
     load_banks();
     p = (uint32_t)settings_load(&set, sizeof set);
     if (p) {                                    /* the settings of the builds before the mixer (5 + 92 bytes) and before the sequencer (5 + 84): carry them over */
-        uint8_t ob[5u + SQ2_P];
-        uint8_t oc[5u + SQ_P];
-        if (!settings_load(ob, sizeof ob)) {
+        uint8_t od[5u + FX2_P], ob[5u + SQ2_P], oc[5u + SQ_P];
+        uint32_t mig = 0;                                       /* carried over from an older layout: the second echo starts at its defaults */
+        if (!settings_load(od, sizeof od)) {                     /* the mixer build: no second echo yet */
+            for (k = 0; k < sizeof od; k++) ((uint8_t *)&set)[k] = od[k];
+            for (k = FX2_P; k < NPARAM; k++) set.p[k] = param(k)->def;
+            p = 0; mig = 1;
+        } else if (!settings_load(ob, sizeof ob)) {
             for (k = 0; k < sizeof ob; k++) ((uint8_t *)&set)[k] = ob[k];
             for (k = SQ2_P; k < NPARAM; k++) set.p[k] = param(k)->def;
-            p = 0;
+            p = 0; mig = 1;
         } else if (!settings_load(oc, sizeof oc)) {
             for (k = 0; k < sizeof oc; k++) ((uint8_t *)&set)[k] = oc[k];
             for (k = SQ_P; k < NPARAM; k++) set.p[k] = param(k)->def;
-            p = 0;
+            p = 0; mig = 1;
         }
+        if (mig) for (k = 0; k < POLIVOKS_FX_PARAMS; k++) set.p[FX2_P + k] = polivoks_fx_default[k];
     }
     if (p || set.magic != 0xA9 || (int8_t)set.oct < -2 || (int8_t)set.oct > 2 || set.ch > 16u || set.page >= MAXPAGE || set.preset >= NPRESET) {
         set.magic = 0xA9; set.preset = 0; set.page = 0; set.oct = 0; set.ch = 0;
