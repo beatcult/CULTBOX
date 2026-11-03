@@ -9,6 +9,10 @@
  *   HOME       a tap: back to the mix page (the ALGORITHM dial's first stop); held 1.5 s: the selected track's values back to the starting sound
  *   KNOB 1-4   the four values of the page
  *   OCT- OCT+  the octave (kept in flash)
+ *   ARP        (PLVKS) off, on, latch: held keys play one after another in time with the tempo (ARPEGGIATOR page: mode, rate, octaves, gate).
+ *              REC (outside SEQ) arms recording: while the pattern runs, the arpeggio or the keys are written into the PLVKS steps
+ *   SCALE      (page: root, scale, QKeys, QSeq) with a scale chosen, the step edit's pitch knobs walk its notes; QKeys snaps the keys,
+ *              MIDI and arpeggio to it; QSeq snaps the pattern as it plays
  *   PRESETS    the preset: F1..F12 (factory), U1..U16 (yours); loaded as you turn; * marks an edited sound
  *   SAVE       store the sound in the selected user slot (from a factory preset: the next free slot)
  *   ALGORITHM  the engine: PLVKS, DUBMARINE, DRUMS (one click, one engine)
@@ -45,6 +49,8 @@ static uint32_t fm1_ticks(void) { return 0; }   /* (no counter on the computer: 
 #include "drums.c"
 #include "drumseq.c"
 #include "fxchain.c"
+#include "scale.h"
+#include "arp.c"
 #include "sirenfmt.h"
 #include "presets.h"
 
@@ -62,8 +68,9 @@ static uint32_t fm1_ticks(void) { return 0; }   /* (no counter on the computer: 
 #define FX2_P (MIX_P + 7u)                                     /* 107..110: DUBMARINE's own echo: time, feedback, tone, echo */
 #define FXS_P (FX2_P + POLIVOKS_FX_PARAMS)                     /* 111..114: tempo sync: echo 1 (drums, PLVKS) sync and note value, echo 2 (DUBMARINE) sync and note value */
 #define CH_P (FXS_P + 4u)                                      /* 115..138: each channel's effects (drums, PLVKS, DUBMARINE), 8 apiece: vintage, saturation model, drive, mix; tape drive, wow, age, mix (fxchain.h) */
-#define NPARAM (CH_P + FXC_CHANNELS * FXC_PARAMS)
-#define MAXPAGE 12
+#define AR_P (CH_P + FXC_CHANNELS * FXC_PARAMS)                /* 139..147: the arpeggiator (on, mode, rate, octaves, gate) and the scale (root, scale, quantize keys, quantize the pattern) */
+#define NPARAM (AR_P + 9u)
+#define MAXPAGE 14
 
 /* ---- the sound (audio ISR): events from the main loop, one writer each side */
 enum { EV_NOTE, EV_PEDAL, EV_BEND, EV_MOD, EV_PARAM, EV_PANIC, EV_SEQ };
@@ -98,8 +105,32 @@ typedef struct {                                /* a sequenced track: 0 drums, 1
     uint8_t dirty; uint32_t dirty_t;
 } trk_t;
 static trk_t trk[2];
+static arp_t arp;                               /* the PLVKS keys' arpeggiator (ISR) */
+static volatile uint8_t rec_on, rec_h, rec_t;   /* REC armed; the notes it heard, for the main loop to write into the pattern */
+static struct { uint8_t step, note, vel; } recq[16];
 static volatile uint8_t mixv[7];
 static uint8_t fxsync[4] = {0, 5, 0, 5};         /* the echoes' sync and note value (ISR's copy of FXS_P) */                /* MIX_P: volumes of drums, PLVKS, DUBMARINE; master; echo sends */
+static void rec_hook(unsigned note, unsigned vel)   /* a PLVKS note was played: if REC is armed and the track runs, it belongs on the step nearest now */
+{
+    uint8_t nx = (uint8_t)((rec_h + 1u) & 15u);
+    if (!rec_on || !trk[1].q.run || !vel || nx == rec_t) return;
+    recq[rec_h].step = (uint8_t)seq_nearest(&trk[1].q); recq[rec_h].note = (uint8_t)note; recq[rec_h].vel = (uint8_t)vel;
+    rec_h = nx;
+}
+static void arp_out(void *c, unsigned note, unsigned vel) { (void)c; polivoks_bank_note((polivoks_bank_t *)bank_store, note, vel, 0); }
+static void arp_rec(void *c, unsigned note, unsigned vel) { (void)c; rec_hook(note, vel); }
+static void plvks_key(unsigned note, unsigned vel, unsigned raw)      /* a key or MIDI note for the PLVKS: through the arpeggiator unless it is an audition */
+{
+    if (!raw) {
+        unsigned was = arp.nl;
+        if (arp_note(&arp, note, vel)) {
+            if (vel && !was && arp.nl && trk[1].q.run && !trk[1].q.sync) arp.next_in = trk[1].q.next_in;   /* a new arpeggio starts on the next step of a running pattern */
+            return;
+        }
+    }
+    polivoks_bank_note((polivoks_bank_t *)bank_store, note, vel, 0);
+    if (!raw) rec_hook(note, vel);
+}
 static volatile uint16_t tpeak[3];              /* the loudest sample of each channel (Q15) since the main loop last looked */
 static void apply(unsigned p, unsigned v)       /* ISR side */
 {
@@ -119,10 +150,16 @@ static void apply(unsigned p, unsigned v)       /* ISR side */
     else if (p < FX2_P) mixv[p - MIX_P] = (uint8_t)v;
     else if (p < FXS_P) polivoks_fx_set(1u, p - FX2_P, v);
     else if (p < CH_P) { unsigned u = (p - FXS_P) >> 1; fxsync[p - FXS_P] = (uint8_t)v; polivoks_fx_sync(u, fxsync[u * 2u], fxsync[u * 2u + 1u]); }
-    else {
+    else if (p < AR_P) {
         unsigned c = (p - CH_P) / FXC_PARAMS, k = (p - CH_P) % FXC_PARAMS;
         fxc_set(c, k, v);
         if (k == FXC_VINT) { if (c == 0u) drums_vintage((drums_bank_t *)drums_store, v); else if (c == 1u) polivoks_bank_vintage((polivoks_bank_t *)bank_store, v); else dubsiren_vintage((dubsiren_bank_t *)siren_store, v); }
+    }
+    else {                                                       /* the arpeggiator and the scale */
+        static uint8_t sc[4];                                    /* root, scale, (keys: the main loop's), pattern */
+        unsigned k = p - AR_P;
+        if (k < ARP_NPARAMS) arp_set(&arp, k, v);
+        else { sc[k - 5u] = (uint8_t)v; seq_snap(&trk[1].q, sc[3], sc[0], sc[1]); }
     }
 }
 
@@ -154,30 +191,33 @@ static void app_audio(int32_t *out, uint32_t n)
         const event_t *e = &ring[ev_tail];
         uint32_t tg = e->pad ? (uint32_t)e->pad - 1u : engine;   /* the engine a note, pedal, bend or wheel is for */
         switch (e->type) {
-        case EV_NOTE: if (tg == 2u) drums_note(drums, e->a, e->b); else if (tg == 1u) dubsiren_note(siren, e->a, e->b); else polivoks_bank_note(bank, e->a, e->b, 0); break;
+        case EV_NOTE: if (tg == 2u) drums_note(drums, e->a, e->b); else if (tg == 1u) dubsiren_note(siren, e->a, e->b); else plvks_key(e->a, e->b, (unsigned)e->value); break;
         case EV_PEDAL: if (!tg) polivoks_bank_pedal(bank, e->a); break;
         case EV_BEND: if (tg == 1u) dubsiren_bend(siren, (int32_t)e->value * 16); else if (!tg) polivoks_bank_bend(bank, (int32_t)e->value * 16); break;   /* +-2 semitones */
         case EV_MOD: if (tg == 1u) dubsiren_mod(siren, e->a); else if (!tg) polivoks_bank_mod(bank, e->a); break;
         case EV_PARAM: apply(e->a, e->b); break;
         case EV_SEQ:
+            if (e->a == SEQ_START) arp_restart(&arp);
             if (e->a == SEQ_CLOCK) { seq_clock_in(&trk[0].q, trk[0].buf[trk[0].live]); seq_clock_in(&trk[1].q, trk[1].buf[trk[1].live]); }
             else { seq_command(&trk[0].q, e->a); seq_command(&trk[1].q, e->a); }
             break;
-        default: polivoks_bank_panic(bank); dubsiren_panic(siren); drums_panic(drums); break;
+        default: polivoks_bank_panic(bank); dubsiren_panic(siren); drums_panic(drums); arp_stop(&arp); break;
         }
         ev_tail = (uint8_t)((ev_tail + 1u) % RING);
     }
     for (blk = 0; blk + POLIVOKS_FRAMES <= n; blk += POLIVOKS_FRAMES) {
         uint32_t gm = gain_of(mixv[3]), g, any;
+        float spb = trk[0].q.sync && trk[0].q.est > 0.0f ? trk[0].q.est * 24.0f : 2646000.0f / (float)(trk[0].q.tempo + 40u);   /* samples a beat */
         for (i = 0; i < POLIVOKS_FRAMES; i++) left[i] = snd[i] = snd2[i] = 0;
         if (trk[0].q.run) seq_block(&trk[0].q, trk[0].buf[trk[0].live]);
         if (trk[1].q.run) seq_block(&trk[1].q, trk[1].buf[trk[1].live]);
+        arp_block(&arp, spb);
         any = 0;
         if (drums_render(drums, tmp)) { if (fxc_active(0u)) fxc_process(0u, tmp, POLIVOKS_FRAMES); g = gain_of(mixv[0]) * gm >> 7; mix_in(0, g, g * mixv[4] >> 7, snd); any = 1; for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0; }
         if (polivoks_bank_render(bank, tmp)) { if (fxc_active(1u)) fxc_process(1u, tmp, POLIVOKS_FRAMES); g = gain_of(mixv[1]) * gm >> 7; mix_in(1, g, g * mixv[5] >> 7, snd); any = 1; for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0; }
         if (dubsiren_render(siren, tmp)) { if (fxc_active(2u)) fxc_process(2u, tmp, POLIVOKS_FRAMES); g = gain_of(mixv[2]) * gm >> 7; mix_in(2, g, g * mixv[6] >> 7, snd2); any = 1; for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0; }   /* (DUBMARINE has its own echo) */
         for (i = 0; i < POLIVOKS_FRAMES; i++) right[i] = left[i];
-        polivoks_fx_tempo(trk[0].q.sync && trk[0].q.est > 0.0f ? trk[0].q.est * 24.0f : 2646000.0f / (float)(trk[0].q.tempo + 40u));   /* samples a beat */
+        polivoks_fx_tempo(spb);
         any |= polivoks_fx_process(0u, snd, left, right);
         any |= polivoks_fx_process(1u, snd2, left, right);
         if (!any) continue;                                        /* silence in, silence out: nothing to add */
@@ -218,6 +258,10 @@ static const fm1_param_t FXP[POLIVOKS_FX_PARAMS] = {
     {"Time", 127, 0, 0}, {"Feedbk", 127, 0, 0}, {"Tone", 127, 0, 0}, {"Echo", 127, 0, 0}};
 static const char *const SYNC_ECHO[] = {"Free", "Tempo"}, *const NOTE_VALUES[] = {"1/32", "1/16T", "1/16", "1/8T", "1/16.", "1/8", "1/4T", "1/8.", "1/4", "1/2T", "1/4.", "1/2"};
 static const fm1_param_t FXSP[4] = {{"Sync 1", 1, 0, SYNC_ECHO}, {"Note 1", 11, 5, NOTE_VALUES}, {"Sync 2", 1, 0, SYNC_ECHO}, {"Note 2", 11, 5, NOTE_VALUES}};
+static const char *const ARP_ONS[] = {"Off", "On", "Latch"}, *const ARP_MODES[] = {"Up", "Down", "UpDn", "Order", "Random"}, *const ARP_RATES[] = {"1/8", "1/16", "1/16T", "1/32"};
+static const char *const ARP_OCTN[] = {"1", "2", "3", "4"}, *const OFFON[] = {"Off", "On"};
+static const fm1_param_t ARPP[9] = {{"Arp", 2, 0, ARP_ONS}, {"Mode", 4, 0, ARP_MODES}, {"Rate", 3, 1, ARP_RATES}, {"Octs", 3, 0, ARP_OCTN}, {"Gate", 127, 80, 0},
+                                    {"Root", 11, 0, ROOT_NAMES}, {"Scale", SCALE_N - 1, 0, SCALE_NAMES}, {"QKeys", 1, 0, OFFON}, {"QSeq", 1, 0, OFFON}};
 static const char *const SAT_NAMES[] = {"Tube", "Diode", "Fuzz", "Fold", "Rect"};
 static const fm1_param_t CHP[FXC_PARAMS] = {{"Vintage", 127, 0, 0}, {"Model", 4, 0, SAT_NAMES}, {"Drive", 127, 64, 0}, {"Mix", 127, 0, 0},
                                             {"Drive", 127, 64, 0}, {"Wow", 127, 40, 0}, {"Age", 127, 40, 0}, {"Mix", 127, 0, 0}};
@@ -236,12 +280,12 @@ static const fm1_param_t *param(unsigned p)
 {
     return p < NVOICEPARAM ? polivoks_param((int)p) : p < FX_P ? dubsiren_param((int)(p - SIREN_P))
          : p < ENGINE_P ? &FXP[p - FX_P] : p == ENGINE_P ? &ENGP : p < DSEL_P ? &PADP[(p - PADP_P) % DRUM_PADPARAMS]
-         : p == DSEL_P ? &dselp : p < SQ_P ? &DGLOBP[p - DLEV_P] : p < SQ2_P ? &SQP[p - SQ_P] : p < MIX_P ? &SQP[p - SQ2_P] : p < FX2_P ? &MIXP[p - MIX_P] : p < FXS_P ? &FXP[p - FX2_P] : p < CH_P ? &FXSP[p - FXS_P] : &CHP[(p - CH_P) % FXC_PARAMS];
+         : p == DSEL_P ? &dselp : p < SQ_P ? &DGLOBP[p - DLEV_P] : p < SQ2_P ? &SQP[p - SQ_P] : p < MIX_P ? &SQP[p - SQ2_P] : p < FX2_P ? &MIXP[p - MIX_P] : p < FXS_P ? &FXP[p - FX2_P] : p < CH_P ? &FXSP[p - FXS_P] : p < AR_P ? &CHP[(p - CH_P) % FXC_PARAMS] : &ARPP[p - AR_P];
 }
 /* pages: the first parameter of each (four to a page), per engine */
-static const uint8_t PV_PAGE[12] = {0, 4, 8, 12, 16, 20, 24, 28, FX_P, FXS_P, CH_P + FXC_PARAMS, CH_P + FXC_PARAMS + 4};
-static const char *const PV_TITLE[12] = {"FILTER", "OSCILLATOR 1", "OSCILLATOR 2", "AMP ENVELOPE", "FILTER ENV",
-                                        "LFO", "MOD AND DRIVE", "PLAY", "BBD ECHO", "ECHO SYNC", "CHARACTER", "TAPE"};
+static const uint8_t PV_PAGE[14] = {0, 4, 8, 12, 16, 20, 24, 28, AR_P + 1, AR_P + 5, FX_P, FXS_P, CH_P + FXC_PARAMS, CH_P + FXC_PARAMS + 4};
+static const char *const PV_TITLE[14] = {"FILTER", "OSCILLATOR 1", "OSCILLATOR 2", "AMP ENVELOPE", "FILTER ENV",
+                                        "LFO", "MOD AND DRIVE", "PLAY", "ARPEGGIATOR", "SCALE", "BBD ECHO", "ECHO SYNC", "CHARACTER", "TAPE"};
 static const uint8_t SI_PAGE[7] = {SIREN_P, SIREN_P + 4, SIREN_P + 8, FX2_P, FXS_P, CH_P + 2 * FXC_PARAMS, CH_P + 2 * FXC_PARAMS + 4};
 static const char *const SI_TITLE[7] = {"PITCH LFO", "FILTER", "PLAY", "BBD ECHO", "ECHO SYNC", "CHARACTER", "TAPE"};
 static const char *const DR_TITLE[6] = {"PAD", "MIX", "BBD ECHO", "ECHO SYNC", "CHARACTER", "TAPE"}, *const SQ_TITLE[2] = {"TIMING", "PATTERN"};
@@ -251,7 +295,7 @@ static uint8_t seqmode, seqview, mixview = 1;   /* mixview: the mix page (the AL
 static uint32_t mixpg;
                 /* SEQ mode (DRUMS only) and the page of 16 steps on show */
 static uint32_t seqpg;                           /* the knob page in SEQ mode */
-static uint32_t npage(void) { return mixview ? 2u : seqmode ? 2u : engine_val() == 2u ? 6u : engine_val() ? 7u : 12u; }
+static uint32_t npage(void) { return mixview ? 2u : seqmode ? 2u : engine_val() == 2u ? 6u : engine_val() ? 7u : 14u; }
 static uint32_t page_base(uint32_t page) { return engine_val() ? SI_PAGE[page] : PV_PAGE[page]; }
 static const char *page_title(uint32_t page) { return seqmode ? SQ_TITLE[page] : engine_val() == 2u ? DR_TITLE[page] : engine_val() ? SI_TITLE[page] : PV_TITLE[page]; }
 static uint32_t page_param(uint32_t page, uint32_t k)       /* the k-th parameter on the page (the PAD page edits the selected pad) */
@@ -415,13 +459,16 @@ static uint32_t last_step_note = 48;            /* the note a new PLVKS step sta
 static uint32_t aud_n[2] = {255, 255}, aud_t;   /* an audition: the notes sounding, and since when */
 static void play(uint32_t note, uint32_t vel);
 static void stop(uint32_t note);
+static uint8_t rawf;                            /* set while an audition plays: no scale, no arpeggiator */
 static void audition(uint32_t n1, uint32_t n2, uint32_t vel)
 {
+    rawf = 1;
     if (aud_n[0] != 255u) stop(aud_n[0]);
     if (aud_n[1] != 255u) stop(aud_n[1]);
     aud_n[0] = n1; aud_n[1] = n2; aud_t = fm1_ms;
     play(n1, vel);
     if (n2 != 255u) play(n2, vel);
+    rawf = 0;
 }
 static void touch_pat(void) { TK.dirty = 1; TK.dirty_t = fm1_ms; pat_ver++; }
 static uint32_t step_tap(uint32_t step)         /* a tap on a step: drums off / hit / accent (and its edits go); PLVKS on / off */
@@ -538,18 +585,22 @@ static void copy_bar(void)                      /* HOME + ARP: the 16 steps on s
 static uint32_t last_note = 255;
 static uint32_t nheld[4], ping;                 /* the held notes (a bit each) and the radar's ping (0 = none) */
 static uint8_t padhit[DRUMS_NPAD];              /* DRUMS: how brightly each pad shows its last hit (8 = just hit) */
+static uint8_t qmap[128];                       /* PLVKS keys: the note each key was sent as, plus 1 (a key lets go of the note it sounded, whatever the scale says by then) */
 static void play_to(uint32_t note, uint32_t vel, uint32_t tgt)   /* tgt: 0 the selected engine, else the engine + 1 */
 {
-    uint32_t en = tgt ? tgt - 1u : engine_val();
+    uint32_t en = tgt ? tgt - 1u : engine_val(), pn = note;
     if (note > 127u || !vel) return;
-    push_to(EV_NOTE, (uint8_t)note, (uint8_t)vel, 0, (uint8_t)tgt);
+    if (en == 0u && !rawf) { pn = val[AR_P + 7u] ? scale_snap(val[AR_P + 5u], val[AR_P + 6u], note) : note; qmap[note] = (uint8_t)(pn + 1u); }
+    push_to(EV_NOTE, (uint8_t)pn, (uint8_t)vel, (int16_t)(rawf ? 1 : 0), (uint8_t)tgt);
     if (en == engine_val()) { last_note = note; nheld[note >> 5] |= 1u << (note & 31u); ping = 1; }
     if (en == 2u) { int pd = drums_pad_of_note(note); if (pd >= 0) padhit[pd] = 8; }
 }
 static void stop_to(uint32_t note, uint32_t tgt)
 {
+    uint32_t en = tgt ? tgt - 1u : engine_val(), pn = note;
     if (note > 127u) return;
-    push_to(EV_NOTE, (uint8_t)note, 0, 0, (uint8_t)tgt);
+    if (en == 0u && !rawf && qmap[note]) { pn = (uint32_t)qmap[note] - 1u; qmap[note] = 0; }
+    push_to(EV_NOTE, (uint8_t)pn, 0, (int16_t)(rawf ? 1 : 0), (uint8_t)tgt);
     nheld[note >> 5] &= ~(1u << (note & 31u));
 }
 static void play(uint32_t note, uint32_t vel) { play_to(note, vel, 0); }
@@ -1044,7 +1095,7 @@ static void app_idle(void)
 /* the panel's section buttons: the first page of the section and how many pages it has */
 typedef struct { uint8_t btn, first, count; } section_t;
 static const section_t SECTION_PV[] = {
-    {BTN_SEL, 0, 1}, {BTN_EDIT, 1, 2}, {BTN_ENV, 3, 2}, {BTN_LFO, 5, 2}, {BTN_GLO, 7, 1}, {BTN_FX, 8, 4}};
+    {BTN_SEL, 0, 1}, {BTN_EDIT, 1, 2}, {BTN_ENV, 3, 2}, {BTN_LFO, 5, 2}, {BTN_GLO, 7, 3}, {BTN_FX, 10, 4}};
 static const section_t SECTION_SI[] = {
     {BTN_SEL, 1, 1}, {BTN_EDIT, 0, 1}, {BTN_ENV, 2, 1}, {BTN_LFO, 0, 1}, {BTN_GLO, 2, 1}, {BTN_FX, 3, 4}};
 static const section_t SECTION_DR[] = {
@@ -1168,9 +1219,13 @@ static void app_main(void)
     load_banks();
     p = (uint32_t)settings_load(&set, sizeof set);
     if (p) {                                    /* the settings of the builds before the mixer (5 + 92 bytes) and before the sequencer (5 + 84): carry them over */
-        uint8_t od[5u + FX2_P], ob[5u + SQ2_P], oc[5u + SQ_P], oe[5u + CH_P];
+        uint8_t od[5u + FX2_P], ob[5u + SQ2_P], oc[5u + SQ_P], oe[5u + CH_P], of[5u + AR_P];
         uint32_t mig = 0;                                       /* carried over from an older layout: the second echo starts at its defaults */
-        if (!settings_load(oe, sizeof oe)) {                     /* the build before the channel effects: they start off */
+        if (!settings_load(of, sizeof of)) {                     /* the build before the arpeggiator and the scale: they start off */
+            for (k = 0; k < sizeof of; k++) ((uint8_t *)&set)[k] = of[k];
+            for (k = AR_P; k < NPARAM; k++) set.p[k] = param(k)->def;
+            p = 0;
+        } else if (!settings_load(oe, sizeof oe)) {                     /* the build before the channel effects: they start off */
             for (k = 0; k < sizeof oe; k++) ((uint8_t *)&set)[k] = oe[k];
             for (k = CH_P; k < NPARAM; k++) set.p[k] = param(k)->def;
             p = 0;
@@ -1207,6 +1262,7 @@ static void app_main(void)
     seq_kind(&trk[1].q, 0u);                    /* the second track plays the PLVKS voice */
     polivoks_fx_reset();
     fxc_reset();
+    arp_init(&arp, arp_out, arp_rec, 0);
     for (p = 0; p < NPARAM; p++) apply(p, val[p]);
     engine = (uint8_t)val[ENGINE_P];
     pattern_load(0u, cur_pat_t(0u));
@@ -1329,6 +1385,18 @@ static void app_main(void)
                     }
                     knob_t[k] = fm1_ms;
                     nv = v + step;
+                    if (bank_kind == SEQ_KIND_PLVKS && sfpage == 0u && k < 2u && val[AR_P + 6u]) {     /* a scale: the pitch knobs walk its notes, a click a degree */
+                        int32_t dn = e > 0 ? 1 : -1, cnt = step < 0 ? -step : step, nb;
+                        if (cnt > 3) cnt = 3;                                   /* (a spun knob: three degrees a click at most) */
+                        if (k == 0u) nb = v;
+                        else if (v > 0) nb = v - 1;
+                        else { int32_t a1, a2, a3; sf_get(0, &a1, &a2, &a3); nb = a1; }
+                        if (k == 1u && v == 0 && dn < 0) nv = 0;
+                        else {
+                            while (cnt-- > 0) nb = (int32_t)scale_step(val[AR_P + 5u], val[AR_P + 6u], (unsigned)nb, dn);
+                            nv = k == 0u ? nb : nb + 1;
+                        }
+                    }
                     nv = nv < mn ? mn : nv > mx ? mx : nv;
                     if (nv != v) sf_set(k, nv);
                     continue;
@@ -1375,6 +1443,29 @@ static void app_main(void)
             } else if (engine_val() != 1u) { seqmode = !seqmode; stepedit = -1; held_k = 255u; seqpg = 0; seqview = 0; page_drawn = ~0u; pat_ver++; }
             else say("SEQ: PLVKS OR DRUMS", 1200);
         }
+        if (b & (1u << BTN_ARP) && !home) {                              /* ARP: off, on, latch (HOME + ARP in SEQ copies a bar instead) */
+            uint32_t v = (val[AR_P] + 1u) % 3u;
+            set_param(AR_P, v);
+            say(v == 0u ? "ARP OFF" : v == 1u ? "ARP ON" : "ARP LATCH", 1200);
+            dirty = 1; t_change = fm1_ms;
+        }
+        if (b & (1u << BTN_REC) && !seqmode) {                           /* REC (outside SEQ): arm it; the PLVKS keys and arpeggio are written into the pattern as it plays */
+            rec_on = !rec_on;
+            say(rec_on ? "REC ARMED: PLAY, THEN KEYS" : "REC OFF", 1500);
+        }
+        while (rec_t != rec_h) {                                         /* what the audio side heard while REC was armed: written into the PLVKS pattern */
+            static uint32_t rec_step = 999u, rec_ms;
+            uint32_t st = recq[rec_t].step, nt = recq[rec_t].note;
+            uint8_t *pat = trk[1].buf[trk[1].live];
+            seq_note_t r;
+            seq_note_get(pat, st, &r);
+            if (st == rec_step && fm1_ms - rec_ms < 400u && r.on && r.n1 != nt) { r.has2 = 1; r.n2 = (uint8_t)nt; }       /* a second note at once: a chord */
+            else { r.on = 1; r.n1 = (uint8_t)nt; r.has2 = 0; r.n2 = 0; r.len = 12; r.delay = 0; r.slide = 0; r.chance = 15; r.amp = recq[rec_t].vel; }
+            seq_note_put(pat, st, &r);
+            rec_step = st; rec_ms = fm1_ms; last_step_note = nt;
+            trk[1].dirty = 1; trk[1].dirty_t = fm1_ms; pat_ver++;
+            rec_t = (uint8_t)((rec_t + 1u) & 15u);
+        }
         if (rel & (1u << BTN_PLAY)) {             /* PLAY (on release: held with ALGORITHM it sets the MIDI channel): start and stop */
             if (!play_mod) push(EV_SEQ, trk[0].q.run ? SEQ_STOP : SEQ_START, 0, 0);
             play_mod = 0;
@@ -1406,7 +1497,7 @@ static void app_main(void)
             SECTION = sections();
         }
         if (aud_n[0] != 255u && fm1_ms - aud_t > 180u) {               /* an audition ends */
-            stop(aud_n[0]); if (aud_n[1] != 255u) stop(aud_n[1]);
+            rawf = 1; stop(aud_n[0]); if (aud_n[1] != 255u) stop(aud_n[1]); rawf = 0;
             aud_n[0] = aud_n[1] = 255u;
         }
         if ((seqmode && stepedit >= 0) != sf_was) { sf_was = seqmode && stepedit >= 0; ui_reset = 1; }
@@ -1431,6 +1522,8 @@ static void app_main(void)
             fm1_led_key(SECTION[k].btn, !seqmode && !mixview && page >= SECTION[k].first && page < SECTION[k].first + SECTION[k].count);
         fm1_led_key(BTN_OCT_DOWN, seqmode ? stepedit >= 0 && sfpage == 0 : oct < 0);
         fm1_led_key(BTN_OCT_UP, seqmode ? stepedit >= 0 && sfpage == 1 : oct > 0);
+        fm1_led_key(BTN_ARP, val[AR_P] != 0u);
+        fm1_led_key(BTN_REC, rec_on != 0u);
         fm1_led_key(BTN_SEQ, seqmode);
         fm1_led_key(BTN_PLAY, trk[0].q.run);
 

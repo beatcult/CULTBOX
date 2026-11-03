@@ -1,0 +1,13 @@
+# the arpeggiator: PLVKS, ARP on, three keys held (F3 A3 C4): the notes should follow one another; then latch, then off
+100 enc 1 1
+150 enc 1 1
+200 btn 10
+250 shot
+300 keys 0x91
+3300 keys 0
+3600 btn 10
+3650 keys 0x91
+4200 keys 0
+6000 btn 10
+6100 keys 0x91
+7000 end

@@ -36,10 +36,13 @@ typedef struct {
     drums_bank_t *d; polivoks_bank_t *pv;
     seq_ev_t ev[8];
     uint8_t snd[6];                      /* PLVKS notes switched on by the sequencer (255: none) */
+    uint8_t snap_on, snap_root, snap_scale;   /* PLVKS: the notes of the pattern are snapped to this scale as they play */
 } seq_t;
 void seq_init(seq_t *q, drums_bank_t *d, polivoks_bank_t *pv);
 void seq_kind(seq_t *q, unsigned kind);                              /* which player: stops it */
 void seq_set(seq_t *q, unsigned parameter, unsigned value);
+void seq_snap(seq_t *q, unsigned on, unsigned root, unsigned scale);
+unsigned seq_nearest(const seq_t *q);                                /* the step nearest to now (a note played now belongs there); 0 when it is not running */
 void seq_command(seq_t *q, unsigned command);                        /* SEQ_STOP, SEQ_START, SEQ_CONTINUE */
 void seq_clock_in(seq_t *q, const uint8_t *pat);                     /* one MIDI clock; only when running with sync */
 void seq_block(seq_t *q, const uint8_t *pat);                        /* the clock moves on by one audio block */

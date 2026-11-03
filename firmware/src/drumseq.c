@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* Step sequencer (drumseq.h). */
 #include "drumseq.h"
+#include "scale.h"
 
 /* ---- the drums' steps: 3 bytes a step */
 unsigned seq_get(const uint8_t *st, unsigned step, unsigned pad)
@@ -203,6 +204,7 @@ static void fire_plvks(seq_t *q, const uint8_t *pat, unsigned n, float at, float
     float t, gate;
     unsigned v, lg, tie, len = 16u * ((unsigned)q->len + 1u);
     seq_note_get(pat, n, &r);
+    if (q->snap_on) { r.n1 = (uint8_t)scale_snap(q->snap_root, q->snap_scale, r.n1); r.n2 = (uint8_t)scale_snap(q->snap_root, q->snap_scale, r.n2); }
     if (!r.on || !chance_ok(q, r.chance)) {                       /* nothing here: a held note ends, the next slide has nothing to slide from */
         release_prev(q, at + swing_d, 255u, 255u);
         q->prev[0] = q->prev[1] = 255;
@@ -235,9 +237,23 @@ void seq_init(seq_t *q, drums_bank_t *d, polivoks_bank_t *pv)
     q->run = 0; q->pos = SEQ_NONE; q->kind = SEQ_KIND_DRUMS;
     q->tempo = 80; q->swing = 0; q->len = 0; q->rate = 1; q->sync = 0; q->hit = 90; q->acc = 127;
     q->next_in = 0.0f; q->est = 0.0f; q->clk = 0; q->since = 0; q->rng = 0x9E3779B9u; q->prev[0] = q->prev[1] = 255; q->tied = 0;
-    q->d = d; q->pv = pv;
+    q->d = d; q->pv = pv; q->snap_on = 0; q->snap_root = 0; q->snap_scale = 0;
     for (i = 0; i < 8u; i++) q->ev[i].used = 0;
     for (i = 0; i < 6u; i++) q->snd[i] = 255;
+}
+void seq_snap(seq_t *q, unsigned on, unsigned root, unsigned scale)
+{
+    q->snap_on = (uint8_t)(on && scale); q->snap_root = (uint8_t)(root % 12u); q->snap_scale = (uint8_t)scale;
+}
+unsigned seq_nearest(const seq_t *q)
+{
+    unsigned len = 16u * ((unsigned)q->len + 1u), n;
+    float sl = step_samples(q), into;
+    if (!q->run) return 0;
+    n = q->pos == SEQ_NONE ? len - 1u : q->pos;                      /* the step last played; before the first, the end */
+    if (q->sync) { unsigned per = 24u / steps_per_beat(q); into = (float)q->clk * (1.0f / (float)per); }
+    else into = 1.0f - q->next_in / sl;                              /* how far into it we are, 0..1 */
+    return into >= 0.5f ? (n + 1u) % len : n;
 }
 void seq_kind(seq_t *q, unsigned kind)
 {

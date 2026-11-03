@@ -152,6 +152,20 @@ int main(void)
     seq_command(&Q, SEQ_START); run(20, 0);
     { int tr = 0; for (int i = 0; i < npl; i++) if (pln[i] == 55 && plv[i] == 100) tr = 1;
       CHECK(tr, "a slide with no note before it is an ordinary trigger"); }
+    /* ---- the scale: notes of the pattern snap as they play; the nearest step */
+    fresh(); seq_kind(&Q, SEQ_KIND_PLVKS);
+    { seq_note_t a = {1, 61, 1, 66, 7, 0, 100, 0, 15}; seq_note_put(steps, 0, &a); }
+    seq_snap(&Q, 1, 0, 1);                                                    /* C major */
+    seq_command(&Q, SEQ_START); run(10, 0);
+    { int n60 = 0, n65 = 0, n61 = 0; for (int i = 0; i < npl; i++) if (plv[i] == 100) { n60 += pln[i] == 60; n65 += pln[i] == 65; n61 += pln[i] == 61 || pln[i] == 66; }
+      CHECK(n60 == 1 && n65 == 1 && n61 == 0, "a scale: C# and F# of the pattern play as C and F"); }
+    seq_snap(&Q, 0, 0, 1); seq_command(&Q, SEQ_STOP); seq_command(&Q, SEQ_START); run(10, 0);
+    { int n61 = 0; for (int i = 0; i < npl; i++) if (plv[i] == 100 && pln[i] == 61) n61 = 1; CHECK(n61, "the scale off: the pattern plays as written"); }
+    seq_snap(&Q, 0, 0, 0); seq_command(&Q, SEQ_STOP);
+    fresh(); seq_kind(&Q, SEQ_KIND_PLVKS); seq_set(&Q, SEQ_LEN, 0);
+    seq_command(&Q, SEQ_START); run(2, 0);
+    CHECK(seq_nearest(&Q) == 0, "nearest step: just after step 0 is step 0");
+    { seq_t *q = &Q; int ok = 1; for (long b = 0; b < 40; b++) { now_t = 0; seq_block(q, steps); unsigned nr = seq_nearest(q); if (nr != 0 && nr != 1) ok = 0; } CHECK(ok, "nearest step: always the step playing or the next"); }
     printf("%d failure(s)\n", fails);
     return fails != 0;
 }

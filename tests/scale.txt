@@ -1,0 +1,23 @@
+# the scale: the ARP and SCALE pages, C major with quantized keys, then SEQ step edit walks the scale
+100 enc 1 1
+180 enc 1 1
+260 btn 7
+340 btn 7
+420 shot
+500 btn 7
+580 shot
+660 enc 3 1
+740 enc 4 1
+820 shot
+900 keys 0x2
+1680 keys 0
+1920 btn 11
+2000 btn 6
+2080 shot
+2160 enc 2 1
+2240 enc 2 1
+2320 enc 2 1
+2400 enc 2 1
+2480 enc 2 1
+2560 shot
+3020 end
