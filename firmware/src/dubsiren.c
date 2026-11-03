@@ -16,6 +16,8 @@ struct dubsiren_bank {
     /* derived */
     float tune, rate, depth, cutoff, k, sweep, glide, rel, level;
     uint8_t shape, tunemode, hold;
+    float vint, vd, vc, vtd, vtc;                  /* vintage: the pitch and the filter wander */
+    uint32_t rng, nch;
 };
 _Static_assert(sizeof(struct dubsiren_bank) <= DUBSIREN_BANK_BYTES, "DUBSIREN_BANK_BYTES too small");
 
@@ -126,6 +128,7 @@ void dubsiren_init(dubsiren_bank_t *b)
     uint8_t *raw = (uint8_t *)b;
     for (unsigned i = 0; i < sizeof *b; ++i) raw[i] = 0;
     for (unsigned i = 0; i < SIREN_NPARAMS; ++i) b->pot[i] = ds_params[i].def;
+    b->rng = 0x1F123BB5u;
     if (!ds_tbl_ready) ds_make_tables();
     ds_derive(b);
 }
@@ -150,6 +153,7 @@ void dubsiren_note(dubsiren_bank_t *b, unsigned note, unsigned velocity)
     }
     ds_update(b);
 }
+void dubsiren_vintage(dubsiren_bank_t *b, unsigned v) { b->vint = (float)(v > 127u ? 127u : v) * (1.0f / 127.0f); }
 void dubsiren_bend(dubsiren_bank_t *b, int32_t q16) { b->bend = (float)q16 * (1.0f / 65536.0f); }
 void dubsiren_mod(dubsiren_bank_t *b, unsigned v) { b->wheel = (uint8_t)(v > 127 ? 127 : v); }
 
@@ -174,10 +178,19 @@ unsigned dubsiren_render(dubsiren_bank_t *b, int32_t *out)
         /* pitch: keyboard with glide, bend, sweep, the LFO */
         b->semis += (b->target - b->semis) * b->glide;
         float depth = ds_clamp(b->depth + b->wheel * (1.0f / 254.0f), 0.0f, 1.0f);
-        float oct = (b->semis + b->bend + (b->tunemode ? b->sweep : 0.0f)) * (1.0f / 12.0f) + lfo * depth * 2.0f;
+        float vcut = 0.0f, vpit = 0.0f;
+        if (b->vint > 0.0f) {                                          /* vintage: the oscillator and the filter wander a little */
+            if (!(b->nch++ & 1023u)) {
+                uint32_t n = b->rng; n ^= n << 13; n ^= n >> 17; n ^= n << 5; b->vtd = (float)(n >> 8) * (1.0f / 8388608.0f) - 1.0f;
+                n ^= n << 13; n ^= n >> 17; n ^= n << 5; b->vtc = (float)(n >> 8) * (1.0f / 8388608.0f) - 1.0f; b->rng = n;
+            }
+            b->vd += (b->vtd - b->vd) * 0.004f; b->vc += (b->vtc - b->vc) * 0.004f;
+            vpit = b->vd * 0.02f * b->vint; vcut = b->vc * 0.4f * b->vint;     /* octaves: +-24 cents, +-0.4 oct at most */
+        }
+        float oct = (b->semis + b->bend + (b->tunemode ? b->sweep : 0.0f)) * (1.0f / 12.0f) + lfo * depth * 2.0f + vpit;
         float f = ds_clamp(b->tune * ds_exp2(oct), 20.0f, 12000.0f);
         float inc = f * (1.0f / DS_SR);
-        float fc = ds_clamp(b->cutoff * ds_exp2(b->sweep * 1.5849625f), 40.0f, 16000.0f);   /* x3 per full sweep */
+        float fc = ds_clamp(b->cutoff * ds_exp2(b->sweep * 1.5849625f + vcut), 40.0f, 16000.0f);   /* x3 per full sweep */
         float g = ds_warp(fc), k = b->k, h = 1.0f / (1.0f + k * g + g * g);
         /* the envelope: 5 ms attack, then the gate or an exponential release */
         float e0 = env;

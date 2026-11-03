@@ -54,6 +54,8 @@ jobs:
           build/drum_test | tail -3
           gcc -O2 -Wall -o build/seq_test tests/seq_test.c -lm
           build/seq_test | tail -3
+          gcc -O2 -Wall -o build/fxc_test tests/fxc_test.c -lm
+          build/fxc_test | tail -3
       - name: Publish the package
         env:
           GH_TOKEN: ${{ github.token }}

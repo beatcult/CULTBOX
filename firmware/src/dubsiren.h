@@ -20,6 +20,7 @@ typedef struct dubsiren_bank dubsiren_bank_t;
 void dubsiren_init(dubsiren_bank_t *b);
 void dubsiren_panic(dubsiren_bank_t *b);
 void dubsiren_note(dubsiren_bank_t *b, unsigned note, unsigned velocity);   /* velocity 0: off */
+void dubsiren_vintage(dubsiren_bank_t *b, unsigned amount);   /* 0..127: the pitch and filter wander */
 void dubsiren_bend(dubsiren_bank_t *b, int32_t semitones_q16);
 void dubsiren_mod(dubsiren_bank_t *b, unsigned value);
 void dubsiren_set(dubsiren_bank_t *b, unsigned parameter, unsigned value);

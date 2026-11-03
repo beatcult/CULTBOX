@@ -16,8 +16,8 @@ struct drums_bank {
     drum_voice_t v[DRUMS_NPAD];
     uint8_t pv[DRUMS_PADVALS];
     uint8_t level, crush, tone, choke;
-    float lp, held;
-    uint32_t hold_n;
+    float lp, held, vint;
+    uint32_t hold_n, rng;
 };
 typedef char drums_bank_fits[sizeof(struct drums_bank) <= DRUMS_BANK_BYTES ? 1 : -1];
 
@@ -43,8 +43,9 @@ void drums_init(drums_bank_t *b)
         b->pv[i * 3u + DRUM_TUNE] = 64; b->pv[i * 3u + DRUM_DECAY] = 127; b->pv[i * 3u + DRUM_LEVEL] = 100;
     }
     b->level = 100; b->crush = 0; b->tone = 127; b->choke = 1;
-    b->lp = b->held = 0.0f; b->hold_n = 0;
+    b->lp = b->held = b->vint = 0.0f; b->hold_n = 0; b->rng = 0x2F6E2B1u;
 }
+void drums_vintage(drums_bank_t *b, unsigned v) { b->vint = (float)(v > 127u ? 127u : v) * (1.0f / 127.0f); }
 void drums_set(drums_bank_t *b, unsigned p, unsigned v)
 {
     if (p < DRUMS_PADVALS) b->pv[p] = (uint8_t)v;
@@ -60,13 +61,18 @@ void drums_note_ex(drums_bank_t *b, unsigned note, unsigned vel, uint32_t delay,
 {
     int pad = drums_pad_of_note(note);
     drum_voice_t *v;
-    float st, f, r0, r1;
+    float st, f, r0, r1, vg = 1.0f;
     int i;
     unsigned tune, decay;
     if (pad < 0 || !vel) return;
     v = &b->v[pad];
     tune = b->pv[pad * 3 + DRUM_TUNE]; decay = b->pv[pad * 3 + DRUM_DECAY];
     st = ((float)tune - 64.0f) * (12.0f / 64.0f) + (float)tune_half * 0.5f;     /* the pad's tune, +-12 semitones, and the step's, +-12 */
+    if (b->vint > 0.0f) {                                    /* vintage: no two hits alike: a little off pitch and level */
+        uint32_t n = b->rng; n ^= n << 13; n ^= n >> 17; n ^= n << 5; b->rng = n;
+        st += ((float)(n >> 8) * (1.0f / 8388608.0f) - 1.0f) * 0.4f * b->vint;                  /* +-40 cents at most */
+        vg = 1.0f - 0.18f * b->vint * (float)((n >> 3) & 255u) * (1.0f / 255.0f);
+    }
     i = (int)st;
     if ((float)i > st) i--;
     f = st - (float)i;
@@ -81,7 +87,7 @@ void drums_note_ex(drums_bank_t *b, unsigned note, unsigned vel, uint32_t delay,
         float x = (float)decay * (1.0f / 127.0f), T = 0.01f + 0.9f * x * x;
         v->envm = 1.0f - 6.9f / (T * 44100.0f);
     }
-    v->gain = ((float)vel * (1.0f / 127.0f)) * ((float)b->pv[pad * 3 + DRUM_LEVEL] * 0.01f);
+    v->gain = ((float)vel * (1.0f / 127.0f)) * ((float)b->pv[pad * 3 + DRUM_LEVEL] * 0.01f) * vg;
     v->active = 1;
     v->delay = delay;
     if (pad == HAT_CLOSED && b->choke) b->v[HAT_OPEN].active = 0;

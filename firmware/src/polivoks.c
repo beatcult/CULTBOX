@@ -26,6 +26,7 @@ struct polivoks_bank {
     /* derived from pot[] */
     float cutoff, k, envamt, glide, detune, ofs1, ofs2, lfo_inc, d1, d2, df, da;
     float drive, bias, trim, l1, l2, ln, fm, slide_k;
+    float vint, vd1, vd2, vdc, vt1, vt2, vtc, vn1, vn2;   /* vintage: slow wander of both oscillators and the cutoff, and a new tuning for every note */
     pv_adsr_t amp, filt;
 };
 
@@ -168,6 +169,7 @@ static void update(polivoks_bank_t *b, int trigger)
     }
     if (b->nheld || (b->pot[POLIVOKS_GATE] && b->have)) {                /* gate: a key, or GATE holds the last note */
         if (trigger || !b->stage || b->stage == 3) {
+            b->vn1 = noise(&b->rng) * 0.12f; b->vn2 = noise(&b->rng) * 0.12f;      /* (a vintage voice never lands twice on the same pitch) */
             if (!b->stage) { b->pitch1 = b->target1; b->pitch2 = b->target2; b->s1 = b->s2 = 0.0f; b->env = b->fenv = 0.0f; }
             b->stage = b->fstage = 1;
         }
@@ -242,6 +244,7 @@ void polivoks_bank_pedal(polivoks_bank_t *b, unsigned down)
     b->nheld = (uint8_t)out;
     update(b, 0);
 }
+void polivoks_bank_vintage(polivoks_bank_t *b, unsigned v) { b->vint = (float)(v > 127u ? 127u : v) * (1.0f / 127.0f); }
 void polivoks_bank_bend(polivoks_bank_t *b, int32_t semitones_q16) { b->bend = semitones_q16; }
 void polivoks_bank_mod(polivoks_bank_t *b, unsigned value) { b->wheel = (uint8_t)(value > 127 ? 127 : value); }
 unsigned polivoks_bank_active(const polivoks_bank_t *b) { return b->stage != 0; }
@@ -300,13 +303,20 @@ unsigned polivoks_bank_render(polivoks_bank_t *b, int32_t *out)
         if (!(b->chunks & 31)) { b->dt1 = noise(&b->rng) * 5.0f; b->dt2 = noise(&b->rng) * 5.0f; }
         b->drift1 += (b->dt1 - b->drift1) * 0.02f;
         b->drift2 += (b->dt2 - b->drift2) * 0.02f;
+        float vcut = 0.0f, vp1 = 0.0f, vp2 = 0.0f;
+        if (b->vint > 0.0f) {                                            /* vintage: the tuning and the filter wander, slowly, never the same twice */
+            if (!(b->chunks & 1023)) { b->vt1 = noise(&b->rng); b->vt2 = noise(&b->rng); b->vtc = noise(&b->rng); }
+            b->vd1 += (b->vt1 - b->vd1) * 0.004f; b->vd2 += (b->vt2 - b->vd2) * 0.004f; b->vdc += (b->vtc - b->vdc) * 0.004f;
+            vp1 = (b->vd1 * 0.16f + b->vn1) * b->vint; vp2 = (b->vd2 * 0.16f + b->vn2) * b->vint;   /* semitones: +-16 cents drift and +-12 a note, at most */
+            vcut = b->vdc * 0.3f * b->vint;                                                      /* octaves */
+        }
         float du = b->pot[POLIVOKS_VOICES] == POLIVOKS_UNISON ? b->detune * 0.5f : 0.0f;      /* unison: the detune either side of the note */
-        float s1 = b->pitch1 + b->ofs1 - du + bend + lfo * (b->d1 + wheel) + b->drift1 * 0.01f;
-        float s2 = b->pitch2 + b->ofs2 + b->detune - du + bend + lfo * (b->d2 + wheel) + b->drift2 * 0.01f;
+        float s1 = b->pitch1 + b->ofs1 - du + bend + lfo * (b->d1 + wheel) + b->drift1 * 0.01f + vp1;
+        float s2 = b->pitch2 + b->ofs2 + b->detune - du + bend + lfo * (b->d2 + wheel) + b->drift2 * 0.01f + vp2;
         float inc1 = clampf(8.175799f * pv_exp2(s1 * (1.0f / 12.0f)) * (1.0f / SR), 1e-5f, 0.45f);
         float inc2 = clampf(8.175799f * pv_exp2(s2 * (1.0f / 12.0f)) * (1.0f / SR), 1e-5f, 0.45f);
         /* the filter: its cutoff follows its envelope and the modulator, never the keys */
-        float fc = b->cutoff * pv_exp2(b->envamt * b->fenv + lfo * (b->df + wheel));
+        float fc = b->cutoff * pv_exp2(b->envamt * b->fenv + lfo * (b->df + wheel) + vcut);
         float g = warp(clampf(fc, 20.0f, 16000.0f)), k = b->k;
         float h = 1.0f / (1.0f + k * g + g * g);
         float tremolo = 1.0f - b->da * 0.5f * (1.0f + lfo);

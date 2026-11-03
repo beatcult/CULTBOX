@@ -18,6 +18,7 @@ void drums_panic(drums_bank_t *b);
 void drums_note(drums_bank_t *b, unsigned note, unsigned velocity);   /* a General MIDI drum note; velocity 0: ignored (one shots) */
 void drums_note_at(drums_bank_t *b, unsigned note, unsigned velocity, uint32_t delay);   /* the same, starting delay samples from now (the sequencer) */
 void drums_note_ex(drums_bank_t *b, unsigned note, unsigned velocity, uint32_t delay, int tune_half);   /* and a pitch offset in half semitones, -24..24 */
+void drums_vintage(drums_bank_t *b, unsigned amount);                 /* 0..127: every hit a little off pitch and level */
 void drums_set(drums_bank_t *b, unsigned parameter, unsigned value);
 unsigned drums_render(drums_bank_t *b, int32_t *out);                 /* 0 when silent */
 int drums_pad_of_note(unsigned note);                                 /* -1: not a pad */

@@ -48,6 +48,7 @@ void polivoks_bank_note(polivoks_bank_t *b, unsigned note, unsigned velocity, in
 /* A note that joins the ones held without retriggering the envelopes, both oscillators gliding to it (a slide; a note after silence still triggers). */
 void polivoks_bank_note_legato(polivoks_bank_t *b, unsigned note, unsigned velocity);
 void polivoks_bank_pedal(polivoks_bank_t *b, unsigned down);
+void polivoks_bank_vintage(polivoks_bank_t *b, unsigned amount);   /* 0..127: how far the tuning and the cutoff wander (0: they hold still) */
 void polivoks_bank_bend(polivoks_bank_t *b, int32_t semitones_q16);
 void polivoks_bank_mod(polivoks_bank_t *b, unsigned value); /* 0..127, CC1: adds oscillator and filter modulation */
 /* Adds POLIVOKS_FRAMES mono Q23 samples to out. Returns 0 when silent. */
