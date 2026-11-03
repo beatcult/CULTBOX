@@ -1,0 +1,25 @@
+# HOME: a tap goes back to the mix page from a PLVKS page, from SEQ and from DUBMARINE; held a second and a half it resets the sound
+100 enc 1 1
+150 enc 1 1
+200 btn 2
+250 btn 2
+300 shot
+400 btn 8
+500 shot
+600 enc 1 1
+650 enc 1 1
+700 btn 11
+800 btn 8
+900 shot
+1000 enc 1 1
+1050 enc 1 1
+1100 btn 8
+1200 shot
+1300 enc 1 1
+1350 enc 1 1
+1400 enc 2 6
+1500 btndown 8
+3200 shot
+3300 btnup 8
+3400 shot
+3600 end

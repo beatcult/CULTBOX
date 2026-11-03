@@ -6,7 +6,7 @@
  *   SELECT     the page (nine: filter, oscillator 1, oscillator 2, amp envelope, filter envelope, LFO, mod and drive, play, BBD echo)
  *   SEL EDIT ENV LFO GLO FX   jump to a section: filter / oscillators 1-2 / envelopes (amp, filter) / LFO (LFO, mod and drive) /
  *              play / BBD echo; press again to step through that section's pages (its button is lit)
- *   HOME       every value back to the starting sound
+ *   HOME       a tap: back to the mix page (the ALGORITHM dial's first stop); held 1.5 s: the selected track's values back to the starting sound
  *   KNOB 1-4   the four values of the page
  *   OCT- OCT+  the octave (kept in flash)
  *   PRESETS    the preset: F1..F12 (factory), U1..U16 (yours); loaded as you turn; * marks an edited sound
@@ -1052,12 +1052,13 @@ static const section_t SECTION_DR[] = {
 #define NSECTION 6u
 static const section_t *sections(void) { return engine_val() == 2u ? SECTION_DR : engine_val() ? SECTION_SI : SECTION_PV; }
 
-static void draw_logo(uint32_t x, uint32_t y)
+static void draw_logo(uint32_t x, uint32_t y, uint32_t inv)   /* inv: black on a white disc, not cream on black */
 {
     uint32_t i, a;
     uint16_t ramp[16];
-    for (a = 0; a < 16u; a++) ramp[a] = ui_mix(C_CREAM, C_BLACK, a);
+    for (a = 0; a < 16u; a++) ramp[a] = inv ? ui_mix(C_BLACK, C_WHITE, a) : ui_mix(C_CREAM, C_BLACK, a);
     cv_begin(LOGO_W, LOGO_H, C_BLACK);
+    if (inv) ui_disc(LOGO_W * 2u, LOGO_H * 2u, (int32_t)LOGO_W * 2 - 2, C_WHITE);
     for (i = 0; i < LOGO_W * LOGO_H; i++) {
         uint32_t v = LOGO[i / 2u];
         v = (i & 1u) ? (v & 15u) : (v >> 4);
@@ -1070,7 +1071,7 @@ static void splash(void)                        /* the boot screen: the BEAT CUL
     uint32_t i, t0;
     int32_t w;
     lcd_fill(0, 0, 240, 240, C_BLACK);
-    draw_logo(60, 20);
+    draw_logo(60, 20, 0);
     w = text_w(&FONT_L, "BEAT CULT");
     draw_text_box((uint32_t)(120 - w / 2) - 10u, 156, (uint32_t)w + 20u, &FONT_L, "BEAT CULT", C_CREAM, 1);
     draw_text_box(0, 200, 240, &FONT_S, "PLVKS  DUBMARINE  DRUMS", C_CREAM_DIM, 1);
@@ -1084,7 +1085,7 @@ static void splash(void)                        /* the boot screen: the BEAT CUL
 }
 
 /* ---- the mix page: the logo, and a square a channel (1 drums, 2 PLVKS, 3 DUBMARINE) and the master, with its volume and its level now */
-static uint32_t mix_sig = ~0u, mix_t, mix_pk[3];
+static uint32_t mix_sig = ~0u, mix_t, mix_pk[3], home_t, home_used = 1;
 static void mix_ui(void)
 {
     static const char *const NM[4] = {"DRUMS", "PLVKS", "DUB", "MASTER"}, *const NM2[4] = {"DRUMS", "PLVKS", "DUB", "ECHO"}, *const CH[4] = {"CH 1", "CH 2", "CH 3", "MIX"};
@@ -1106,7 +1107,7 @@ static void mix_ui(void)
     if (!full && sig == mix_sig) return;
     if (full) {
         lcd_fill(0, 0, 240, 240, C_BLACK);
-        draw_logo(60, 2);
+        draw_logo(60, 2, 1);
     }
     if (full || (sig & 0xFFFFu) != (mix_sig & 0xFFFFu) || 1) {
         char t[40];
@@ -1386,15 +1387,23 @@ static void app_main(void)
             }
             stepedit = -1; touch_pat();
         }
-        if (b & (1u << BTN_HOME)) {
-            if (mixview) say("PICK A TRACK FIRST", 1200);
-            else if (seqmode) say("+SEQ CLEAR +ARP COPY +SAVE", 3000);   /* HOME in SEQ: ask first */
-            else {                                                    /* HOME: every value back to the starting sound */
-                defaults_sel();
-                for (p = 0; p < SQ_P; p++) push(EV_PARAM, (uint8_t)p, val[p], 0);
-                for (k = 0; k < 4u; k++) drawn[k] = 0xFF;
-                modified = 1; dirty = 1; t_change = fm1_ms;
-            }
+        /* HOME: a tap goes back to the mix page (the ALGORITHM dial's first stop); held with SEQ, ARP or SAVE it is the pattern chords;
+         * held for a second and a half (not in SEQ) every value of the selected track goes back to the starting sound */
+        if (b & (1u << BTN_HOME)) { home_t = fm1_ms; home_used = 0; if (seqmode) say("+SEQ CLEAR +ARP COPY +SAVE", 3000); }
+        else if (home && b) home_used = 1;                               /* another button came while it was held: a chord */
+        if (home && !home_used && !seqmode && !mixview && fm1_ms - home_t > 1500u) {
+            home_used = 1;
+            defaults_sel();
+            for (p = 0; p < SQ_P; p++) push(EV_PARAM, (uint8_t)p, val[p], 0);
+            for (k = 0; k < 4u; k++) drawn[k] = 0xFF;
+            say("SOUND RESET", 1200);
+            modified = 1; dirty = 1; t_change = fm1_ms;
+        }
+        if (rel & (1u << BTN_HOME) && !home_used && !mixview) {          /* a tap: to the mix page */
+            mixview = 1; nheld[0] = nheld[1] = nheld[2] = nheld[3] = 0;
+            seqmode = 0; stepedit = -1; held_k = 255u; mixpg = 0; page = 0; set.page = 0; ui_reset = 1; dirty = 1; t_change = fm1_ms;
+            page_drawn = ~0u; mix_sig = ~0u; status_drawn = ~0u; dsp_drawn = ~0u; msg_until = 0;
+            SECTION = sections();
         }
         if (aud_n[0] != 255u && fm1_ms - aud_t > 180u) {               /* an audition ends */
             stop(aud_n[0]); if (aud_n[1] != 255u) stop(aud_n[1]);

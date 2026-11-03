@@ -16,9 +16,8 @@
 1500 shot
 1600 keys 0
 1700 btn 6
-1800 btn 8
+1800 btndown 8
 1900 shot
-2000 btndown 8
 2050 btn 10
 2100 btnup 8
 2200 btn 1
