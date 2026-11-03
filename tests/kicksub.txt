@@ -1,0 +1,23 @@
+# the kick's sub: DRUMS, GLO = KICK SUB page, level up, tune, decay, drop; the kick (key 1) with and without
+100 enc 1 1
+180 keys 0x1
+560 keys 0
+1340 btn 7
+1420 shot
+1500 enc 2 1
+1580 enc 2 1
+1660 enc 2 1
+1740 enc 2 1
+1820 enc 2 1
+1900 enc 2 1
+1980 enc 2 1
+2060 enc 2 1
+2140 enc 2 1
+2220 enc 2 1
+2300 enc 2 1
+2380 enc 2 1
+2460 enc 3 1
+2540 shot
+2620 keys 0x1
+3000 keys 0
+4480 end

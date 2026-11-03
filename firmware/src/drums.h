@@ -9,7 +9,11 @@
 #define DRUMS_NPAD 10
 enum { DRUM_TUNE, DRUM_DECAY, DRUM_LEVEL, DRUM_PADPARAMS };          /* per pad: 64 = original pitch; 127 = the whole sample; 100 */
 #define DRUMS_PADVALS (DRUMS_NPAD * DRUM_PADPARAMS)                  /* parameter p < 30: pad p / 3, value p % 3 */
-enum { DRUMS_LEVEL = DRUMS_PADVALS, DRUMS_CRUSH, DRUMS_TONE, DRUMS_CHOKE, DRUMS_END };
+enum { DRUMS_LEVEL = DRUMS_PADVALS, DRUMS_CRUSH, DRUMS_TONE, DRUMS_CHOKE,
+       DRUMS_SUBLEVEL, DRUMS_SUBTUNE, DRUMS_SUBDECAY, DRUMS_SUBDROP, DRUMS_END };
+/* The kick's sub: a sine under the sampled kick (pad 0), started with it, for weight the sample lacks. A magic circle oscillator (two
+ * multiplies a sample, no table, no phase wrap): SUBLEVEL 0 off .. 127; SUBTUNE 30 Hz .. 120 Hz; SUBDECAY 40 ms .. 1 s; SUBDROP how far above
+ * its pitch it starts and falls (0: none .. 127: three times). It follows the kick's velocity and sits after crush and tone. */
 typedef struct { const char *name; const int16_t *data; uint32_t len; uint32_t rate; } drum_sample_t;
 #define DRUMS_BANK_BYTES 640
 typedef struct drums_bank drums_bank_t;

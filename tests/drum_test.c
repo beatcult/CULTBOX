@@ -69,6 +69,62 @@ int main(void)
     drums_init(B); drums_set(B, DRUMS_TONE, 10); drums_note(B, 42, 100); double dull = run(4, &pk);
     drums_init(B); drums_note(B, 42, 100); double bright = run(4, &pk);
     CHECK(dull < bright * 0.7, "tone turned down darkens (less energy in the hat)");
+
+    /* ---- the kick's sub: a magic circle sine under the sample */
+    {
+        static float sub[44100 * 2], nosub[44100 * 2];
+        for (int pass = 0; pass < 2; pass++) {
+            drums_init(B); drums_set(B, DRUMS_SUBLEVEL, pass ? 127 : 0); drums_set(B, DRUMS_SUBTUNE, 40); drums_set(B, DRUMS_SUBDECAY, 127); drums_set(B, DRUMS_SUBDROP, 0);
+            drums_note(B, 36, 127);
+            for (int k = 0; k < 44100 * 2 / 128; k++) { for (int i = 0; i < 128; i++) o[i] = 0; drums_render(B, o); for (int i = 0; i < 128; i++) (pass ? sub : nosub)[k * 128 + i] = (float)(o[i] / 8388608.0); }
+        }
+        static float iso[44100 * 2]; double pkv = 0;
+        for (int i = 0; i < 44100 * 2; i++) { iso[i] = sub[i] - nosub[i]; if (fabs(iso[i]) > pkv) pkv = fabs(iso[i]); }
+        double f_want = 30.0 * pow(2.0, 40.0 * 2.0 / 127.0);      /* tune 40: about 46.4 Hz */
+        int zc = 0; double first = -1, last = -1;
+        for (int i = 1000; i < 30000; i++) if (iso[i - 1] < 0 && iso[i] >= 0) { double t = i + (double)(-iso[i - 1]) / (iso[i] - iso[i - 1]); if (first < 0) first = t; last = t; zc++; }
+        double f_got = (zc - 1) * 44100.0 / (last - first);
+        printf("     sub: tune 40 wants %.2f Hz, measured %.2f Hz, peak %.3f\n", f_want, f_got, pkv);
+        CHECK(fabs(f_got - f_want) < 0.15, "sub: the tuned frequency");
+        CHECK(pkv > 0.5 && pkv < 0.72, "sub: level 127 peaks near 0.7 of full scale, below clipping");
+        double a1 = 0, a2 = 0; for (int i = 0; i < 4410; i++) { if (fabs(iso[8000 + i]) > a1) a1 = fabs(iso[8000 + i]); if (fabs(iso[8000 + 22050 + i]) > a2) a2 = fabs(iso[8000 + 22050 + i]); }
+        CHECK(a2 < a1 && a2 > 0.0 && a1 / a2 > 5.0 && a1 / a2 < 100.0, "sub: decays smoothly, no growth (magic circle stays stable)");
+        CHECK(fabs(iso[0]) < 0.01, "sub: starts from a zero crossing (no click)");
+        double lowa = 0, lowb = 0;
+        for (int i = 0; i < 44100; i++) { lowa += nosub[i] * nosub[i]; lowb += sub[i] * sub[i]; }
+        CHECK(lowb > lowa * 1.5, "sub: adds low-end energy to the sample");
+        for (int i = 0; i < 44100 * 2; i++) if (sub[i] != sub[i]) { fails++; printf("FAIL sub NaN\n"); break; }
+    }
+    {   /* a short decay ends and the engine goes idle; a drop starts higher */
+        drums_init(B); drums_set(B, DRUMS_SUBLEVEL, 100); drums_set(B, DRUMS_SUBDECAY, 0); drums_set(B, DRUMS_SUBDROP, 0);
+        drums_note(B, 36, 100);
+        int idle = 0; for (int k = 0; k < 400; k++) { for (int i = 0; i < 128; i++) o[i] = 0; if (!drums_render(B, o)) { idle = k + 1; break; } }
+        CHECK(idle > 0 && idle < 400, "sub: ends, and the drums report silence again");
+        drums_init(B); drums_set(B, DRUMS_SUBLEVEL, 0); drums_note(B, 36, 100);
+        for (int k = 0; k < 400; k++) { for (int i = 0; i < 128; i++) o[i] = 0; drums_render(B, o); }
+        CHECK(!B->sub_on, "sub: level 0 never starts it");
+        static float a[8000], b[8000];
+        for (int pass = 0; pass < 2; pass++) {
+            drums_init(B); drums_set(B, DRUMS_SUBLEVEL, 127); drums_set(B, DRUMS_SUBTUNE, 40); drums_set(B, DRUMS_SUBDECAY, 100); drums_set(B, DRUMS_SUBDROP, pass ? 127 : 0);
+            drums_note(B, 36, 127);
+            static float on[8000]; static float ref[8000];
+            for (int k = 0; k < 8000 / 128; k++) { for (int i = 0; i < 128; i++) o[i] = 0; drums_render(B, o); for (int i = 0; i < 128; i++) on[k * 128 + i] = (float)(o[i] / 8388608.0); }
+            drums_init(B); drums_set(B, DRUMS_SUBLEVEL, 0); drums_note(B, 36, 127);
+            for (int k = 0; k < 8000 / 128; k++) { for (int i = 0; i < 128; i++) o[i] = 0; drums_render(B, o); for (int i = 0; i < 128; i++) ref[k * 128 + i] = (float)(o[i] / 8388608.0); }
+            for (int i = 0; i < 7936; i++) (pass ? b : a)[i] = on[i] - ref[i];
+        }
+        int za = 0, zb = 0; for (int i = 1; i < 2000; i++) { za += a[i - 1] < 0 && a[i] >= 0; zb += b[i - 1] < 0 && b[i] >= 0; }
+        CHECK(zb > za, "sub: a drop starts the pitch higher");
+    }
+    {   /* a delayed kick: the sub waits too */
+        static float on[512], ref[512];
+        for (int pass = 0; pass < 2; pass++) {
+            drums_init(B); drums_set(B, DRUMS_SUBLEVEL, pass ? 127 : 0); drums_note_at(B, 36, 127, 300);
+            for (int k = 0; k < 4; k++) { for (int i = 0; i < 128; i++) o[i] = 0; drums_render(B, o); for (int i = 0; i < 128; i++) (pass ? on : ref)[k * 128 + i] = (float)(o[i] / 8388608.0); }
+        }
+        double pre = 0; for (int i = 0; i < 300; i++) pre += fabs(on[i] - ref[i]);
+        CHECK(pre < 1e-6 && fabs(on[340] - ref[340]) > 0.0, "sub: starts with a delayed kick, not before");
+    }
     printf("%d failure(s)\n", fails);
     return fails != 0;
 }

@@ -16,8 +16,11 @@ struct drums_bank {
     drum_voice_t v[DRUMS_NPAD];
     uint8_t pv[DRUMS_PADVALS];
     uint8_t level, crush, tone, choke;
+    uint8_t sub_level, sub_tune, sub_decay, sub_drop;
     float lp, held, vint;
     uint32_t hold_n, rng;
+    float sx, sy, se, sf, sa, sk, sg, sp, spk; /* the sub: the circle's two states, its step now and at rest, its level, the decay and the drop's per sample, the gain, the drop now, its rate */
+    uint32_t sub_on, sub_delay;
 };
 typedef char drums_bank_fits[sizeof(struct drums_bank) <= DRUMS_BANK_BYTES ? 1 : -1];
 
@@ -33,7 +36,28 @@ void drums_panic(drums_bank_t *b)
 {
     unsigned i;
     for (i = 0; i < DRUMS_NPAD; i++) b->v[i].active = 0;
+    b->sub_on = 0;
 }
+/* the sub's settings: its pitch (a step of the circle is 2 pi f / rate: exact enough below a few hundred Hz), its decay, its drop */
+static float sub_exp2(float x)                  /* 2^x, x within +-20 (the decay and the pitch only) */
+{
+    int n = (int)(x + (x < 0 ? -0.5f : 0.5f));
+    float a = (x - (float)n) * 0.6931471805599453f;
+    float p = 1.0f + a * (1.0f + a * (0.5f + a * (1.0f / 6.0f + a * (1.0f / 24.0f + a * (1.0f / 120.0f)))));
+    union { uint32_t u; float f; } s;
+    s.u = (uint32_t)(n + 127) << 23;
+    return p * s.f;
+}
+static void sub_derive(drums_bank_t *b)
+{
+    float f = 30.0f * sub_exp2((float)b->sub_tune * (2.0f / 127.0f));                       /* 30 .. 120 Hz */
+    float T = 0.04f + 0.96f * ((float)b->sub_decay * (1.0f / 127.0f)) * ((float)b->sub_decay * (1.0f / 127.0f));   /* seconds to -60 dB */
+    b->sf = 6.2831853f * f * (1.0f / 44100.0f);
+    b->sk = 1.0f - 6.9f / (T * 44100.0f);
+    b->sg = (float)b->sub_level * (1.0f / 127.0f) * 0.7f * 32768.0f;
+    b->spk = 1.0f - 1.0f / (0.025f * 44100.0f);                                             /* the drop settles in about 25 ms */
+}
+
 void drums_init(drums_bank_t *b)
 {
     unsigned i;
@@ -44,6 +68,9 @@ void drums_init(drums_bank_t *b)
     }
     b->level = 100; b->crush = 0; b->tone = 127; b->choke = 1;
     b->lp = b->held = b->vint = 0.0f; b->hold_n = 0; b->rng = 0x2F6E2B1u;
+    b->sub_level = 0; b->sub_tune = 43; b->sub_decay = 60; b->sub_drop = 40;
+    b->sx = b->sy = b->se = b->sf = b->sa = b->sk = b->sg = b->sp = b->spk = 0.0f; b->sub_on = 0; b->sub_delay = 0;
+    sub_derive(b);
 }
 void drums_vintage(drums_bank_t *b, unsigned v) { b->vint = (float)(v > 127u ? 127u : v) * (1.0f / 127.0f); }
 void drums_set(drums_bank_t *b, unsigned p, unsigned v)
@@ -53,6 +80,11 @@ void drums_set(drums_bank_t *b, unsigned p, unsigned v)
     else if (p == DRUMS_CRUSH) b->crush = (uint8_t)v;
     else if (p == DRUMS_TONE) b->tone = (uint8_t)v;
     else if (p == DRUMS_CHOKE) b->choke = (uint8_t)v;
+    else if (p >= DRUMS_SUBLEVEL && p <= DRUMS_SUBDROP) {
+        if (p == DRUMS_SUBLEVEL) b->sub_level = (uint8_t)v; else if (p == DRUMS_SUBTUNE) b->sub_tune = (uint8_t)v;
+        else if (p == DRUMS_SUBDECAY) b->sub_decay = (uint8_t)v; else b->sub_drop = (uint8_t)v;
+        sub_derive(b);
+    }
 }
 
 void drums_note(drums_bank_t *b, unsigned note, unsigned vel) { drums_note_at(b, note, vel, 0); }
@@ -91,14 +123,20 @@ void drums_note_ex(drums_bank_t *b, unsigned note, unsigned vel, uint32_t delay,
     v->active = 1;
     v->delay = delay;
     if (pad == HAT_CLOSED && b->choke) b->v[HAT_OPEN].active = 0;
+    if (pad == 0 && b->sub_level) {                          /* the kick: its sub starts with it, from the circle's zero crossing */
+        float d = (float)b->sub_drop * (1.0f / 127.0f) * 2.0f;   /* the start is up to three times the pitch */
+        b->sx = 0.0f; b->sy = 1.0f; b->sa = 1.0f * ((float)vel * (1.0f / 127.0f)) * ((float)b->pv[DRUM_LEVEL] * 0.01f) * vg;
+        b->sp = d; b->se = b->sf * (1.0f + d);
+        b->sub_on = 1; b->sub_delay = delay;
+    }
 }
 
 unsigned drums_render(drums_bank_t *b, int32_t *out)
 {
     float mix[DRUMS_FRAMES], master = (float)b->level * 0.01f, a, step;
-    unsigned p, i, any = 0, rate_n = 1u + b->crush / 32u;
+    unsigned p, i, any = 0, rate_n = 1u + b->crush / 32u, sstart;
     for (p = 0; p < DRUMS_NPAD && !b->v[p].active; p++) { }
-    if (p == DRUMS_NPAD) return 0;                                   /* nothing sounds: nothing to do */
+    if (p == DRUMS_NPAD && !b->sub_on) return 0;                     /* nothing sounds: nothing to do */
     for (i = 0; i < DRUMS_FRAMES; i++) mix[i] = 0.0f;
     for (p = 0; p < DRUMS_NPAD; p++) {
         drum_voice_t *v = &b->v[p];
@@ -122,6 +160,7 @@ unsigned drums_render(drums_bank_t *b, int32_t *out)
         v->pos = pos; v->env = env;
         if (v->active) any = 1;
     }
+    sstart = b->sub_delay < DRUMS_FRAMES ? b->sub_delay : DRUMS_FRAMES; b->sub_delay -= sstart;   /* a delayed kick: its sub starts with it */
     a = b->tone >= 127u ? 1.0f : 0.02f + 0.98f * ((float)b->tone * (1.0f / 127.0f)) * ((float)b->tone * (1.0f / 127.0f));
     step = 1.0f + ((float)b->crush * (1.0f / 127.0f)) * ((float)b->crush * (1.0f / 127.0f)) * 4096.0f;
     for (i = 0; i < DRUMS_FRAMES; i++) {
@@ -136,9 +175,17 @@ unsigned drums_render(drums_bank_t *b, int32_t *out)
             y = b->held;
         }
         b->lp += a * (y - b->lp);
-        y = b->lp * 256.0f;                                  /* Q15 -> Q23 */
+        y = b->lp;
+        if (b->sub_on && i >= sstart) {                      /* the sub: the magic circle, after crush and tone */
+            b->sx += b->se * b->sy;
+            b->sy -= b->se * b->sx;
+            y += b->sx * b->sa * b->sg * master;
+            b->sa *= b->sk; b->sp *= b->spk; b->se = b->sf * (1.0f + b->sp);
+            if (b->sa < 0.002f) b->sub_on = 0;
+        }
+        y *= 256.0f;                                         /* Q15 -> Q23 */
         q = y > 8388607.0f ? 8388607 : y < -8388607.0f ? -8388607 : (int32_t)y;
         out[i] += q;
     }
-    return any || b->lp > 1.0f || b->lp < -1.0f;
+    return any || b->sub_on || b->lp > 1.0f || b->lp < -1.0f;
 }

@@ -21,6 +21,7 @@
  *   MASTER     the volume (platform.c)
  *   DRUMS      keys 1-10 play the pads (OCT does not move them); MIDI notes are General MIDI drums (36 kick, 38 snare, 42/46 hats..).
  *              The pad grid shows hits; the PAD page tunes, shortens and levels the selected pad.
+ *              KICK SUB page (GLO): a sine under the sampled kick (magic circle oscillator): level, tune 30-120 Hz, decay, pitch drop.
  *   SEQ        (DRUMS) the step sequencer. White keys are the 16 steps of the page, the selected pad's hits light up; tap a key:
  *              off, hit, accent. Black keys pick the pad. OCT- OCT+ move between pages of 16 steps (bars); SELECT turns the knob
  *              pages (TIMING: tempo, swing, length 16/32/48/64, rate 1/8 1/16 1/32; PATTERN: slot 1-16, sync, hit, accent).
@@ -69,7 +70,8 @@ static uint32_t fm1_ticks(void) { return 0; }   /* (no counter on the computer: 
 #define FXS_P (FX2_P + POLIVOKS_FX_PARAMS)                     /* 111..114: tempo sync: echo 1 (drums, PLVKS) sync and note value, echo 2 (DUBMARINE) sync and note value */
 #define CH_P (FXS_P + 4u)                                      /* 115..138: each channel's effects (drums, PLVKS, DUBMARINE), 8 apiece: vintage, saturation model, drive, mix; tape drive, wow, age, mix (fxchain.h) */
 #define AR_P (CH_P + FXC_CHANNELS * FXC_PARAMS)                /* 139..147: the arpeggiator (on, mode, rate, octaves, gate) and the scale (root, scale, quantize keys, quantize the pattern) */
-#define NPARAM (AR_P + 9u)
+#define SUB_P (AR_P + 9u)                                       /* 148..151: the kick's sub (drums): level, tune, decay, drop */
+#define NPARAM (SUB_P + 4u)
 #define MAXPAGE 14
 
 /* ---- the sound (audio ISR): events from the main loop, one writer each side */
@@ -155,6 +157,7 @@ static void apply(unsigned p, unsigned v)       /* ISR side */
         fxc_set(c, k, v);
         if (k == FXC_VINT) { if (c == 0u) drums_vintage((drums_bank_t *)drums_store, v); else if (c == 1u) polivoks_bank_vintage((polivoks_bank_t *)bank_store, v); else dubsiren_vintage((dubsiren_bank_t *)siren_store, v); }
     }
+    else if (p >= SUB_P) drums_set((drums_bank_t *)drums_store, DRUMS_SUBLEVEL + (p - SUB_P), v);
     else {                                                       /* the arpeggiator and the scale */
         static uint8_t sc[4];                                    /* root, scale, (keys: the main loop's), pattern */
         unsigned k = p - AR_P;
@@ -262,6 +265,7 @@ static const char *const ARP_ONS[] = {"Off", "On", "Latch"}, *const ARP_MODES[] 
 static const char *const ARP_OCTN[] = {"1", "2", "3", "4"}, *const OFFON[] = {"Off", "On"};
 static const fm1_param_t ARPP[9] = {{"Arp", 2, 0, ARP_ONS}, {"Mode", 4, 0, ARP_MODES}, {"Rate", 3, 1, ARP_RATES}, {"Octs", 3, 0, ARP_OCTN}, {"Gate", 127, 80, 0},
                                     {"Root", 11, 0, ROOT_NAMES}, {"Scale", SCALE_N - 1, 0, SCALE_NAMES}, {"QKeys", 1, 0, OFFON}, {"QSeq", 1, 0, OFFON}};
+static const fm1_param_t SUBP[4] = {{"Sub", 127, 0, 0}, {"Tune", 127, 43, 0}, {"Decay", 127, 60, 0}, {"Drop", 127, 40, 0}};
 static const char *const SAT_NAMES[] = {"Tube", "Diode", "Fuzz", "Fold", "Rect"};
 static const fm1_param_t CHP[FXC_PARAMS] = {{"Vintage", 127, 0, 0}, {"Model", 4, 0, SAT_NAMES}, {"Drive", 127, 64, 0}, {"Mix", 127, 0, 0},
                                             {"Drive", 127, 64, 0}, {"Wow", 127, 40, 0}, {"Age", 127, 40, 0}, {"Mix", 127, 0, 0}};
@@ -280,7 +284,7 @@ static const fm1_param_t *param(unsigned p)
 {
     return p < NVOICEPARAM ? polivoks_param((int)p) : p < FX_P ? dubsiren_param((int)(p - SIREN_P))
          : p < ENGINE_P ? &FXP[p - FX_P] : p == ENGINE_P ? &ENGP : p < DSEL_P ? &PADP[(p - PADP_P) % DRUM_PADPARAMS]
-         : p == DSEL_P ? &dselp : p < SQ_P ? &DGLOBP[p - DLEV_P] : p < SQ2_P ? &SQP[p - SQ_P] : p < MIX_P ? &SQP[p - SQ2_P] : p < FX2_P ? &MIXP[p - MIX_P] : p < FXS_P ? &FXP[p - FX2_P] : p < CH_P ? &FXSP[p - FXS_P] : p < AR_P ? &CHP[(p - CH_P) % FXC_PARAMS] : &ARPP[p - AR_P];
+         : p == DSEL_P ? &dselp : p < SQ_P ? &DGLOBP[p - DLEV_P] : p < SQ2_P ? &SQP[p - SQ_P] : p < MIX_P ? &SQP[p - SQ2_P] : p < FX2_P ? &MIXP[p - MIX_P] : p < FXS_P ? &FXP[p - FX2_P] : p < CH_P ? &FXSP[p - FXS_P] : p < AR_P ? &CHP[(p - CH_P) % FXC_PARAMS] : p < SUB_P ? &ARPP[p - AR_P] : &SUBP[p - SUB_P];
 }
 /* pages: the first parameter of each (four to a page), per engine */
 static const uint8_t PV_PAGE[14] = {0, 4, 8, 12, 16, 20, 24, 28, AR_P + 1, AR_P + 5, FX_P, FXS_P, CH_P + FXC_PARAMS, CH_P + FXC_PARAMS + 4};
@@ -288,21 +292,21 @@ static const char *const PV_TITLE[14] = {"FILTER", "OSCILLATOR 1", "OSCILLATOR 2
                                         "LFO", "MOD AND DRIVE", "PLAY", "ARPEGGIATOR", "SCALE", "BBD ECHO", "ECHO SYNC", "CHARACTER", "TAPE"};
 static const uint8_t SI_PAGE[7] = {SIREN_P, SIREN_P + 4, SIREN_P + 8, FX2_P, FXS_P, CH_P + 2 * FXC_PARAMS, CH_P + 2 * FXC_PARAMS + 4};
 static const char *const SI_TITLE[7] = {"PITCH LFO", "FILTER", "PLAY", "BBD ECHO", "ECHO SYNC", "CHARACTER", "TAPE"};
-static const char *const DR_TITLE[6] = {"PAD", "MIX", "BBD ECHO", "ECHO SYNC", "CHARACTER", "TAPE"}, *const SQ_TITLE[2] = {"TIMING", "PATTERN"};
+static const char *const DR_TITLE[7] = {"PAD", "MIX", "KICK SUB", "BBD ECHO", "ECHO SYNC", "CHARACTER", "TAPE"}, *const SQ_TITLE[2] = {"TIMING", "PATTERN"};
 static uint8_t sfpage;                           /* its page of knobs: 0 the notes, 1 chance, slide, delay */
 static int32_t stepedit = -1;                    /* SEQ: the step whose notes or hit the four knobs edit (hold a step, press EDIT), or -1 */
 static uint8_t seqmode, seqview, mixview = 1;   /* mixview: the mix page (the ALGORITHM dial's first stop) */
 static uint32_t mixpg;
                 /* SEQ mode (DRUMS only) and the page of 16 steps on show */
 static uint32_t seqpg;                           /* the knob page in SEQ mode */
-static uint32_t npage(void) { return mixview ? 2u : seqmode ? 2u : engine_val() == 2u ? 6u : engine_val() ? 7u : 14u; }
+static uint32_t npage(void) { return mixview ? 2u : seqmode ? 2u : engine_val() == 2u ? 7u : engine_val() ? 7u : 14u; }
 static uint32_t page_base(uint32_t page) { return engine_val() ? SI_PAGE[page] : PV_PAGE[page]; }
 static const char *page_title(uint32_t page) { return seqmode ? SQ_TITLE[page] : engine_val() == 2u ? DR_TITLE[page] : engine_val() ? SI_TITLE[page] : PV_TITLE[page]; }
 static uint32_t page_param(uint32_t page, uint32_t k)       /* the k-th parameter on the page (the PAD page edits the selected pad) */
 {
     if (mixview) return page == 0 ? MIX_P + k : (k < 3u ? MIX_P + 4u + k : FX_P + 3u);
     if (seqmode) return sqi(page * 4u + k);
-    if (engine_val() == 2u) return page == 0 ? (k == 0 ? DSEL_P : PADP_P + val[DSEL_P] * DRUM_PADPARAMS + k - 1u) : page == 1 ? DLEV_P + k : page == 2 ? FX_P + k : page == 3 ? FXS_P + k : CH_P + (page - 4u) * 4u + k;
+    if (engine_val() == 2u) return page == 0 ? (k == 0 ? DSEL_P : PADP_P + val[DSEL_P] * DRUM_PADPARAMS + k - 1u) : page == 1 ? DLEV_P + k : page == 2 ? SUB_P + k : page == 3 ? FX_P + k : page == 4 ? FXS_P + k : CH_P + (page - 5u) * 4u + k;
     return page_base(page) + k;
 }
 
@@ -1099,7 +1103,7 @@ static const section_t SECTION_PV[] = {
 static const section_t SECTION_SI[] = {
     {BTN_SEL, 1, 1}, {BTN_EDIT, 0, 1}, {BTN_ENV, 2, 1}, {BTN_LFO, 0, 1}, {BTN_GLO, 2, 1}, {BTN_FX, 3, 4}};
 static const section_t SECTION_DR[] = {
-    {BTN_SEL, 0, 1}, {BTN_EDIT, 1, 1}, {BTN_ENV, 0, 1}, {BTN_LFO, 1, 1}, {BTN_GLO, 1, 1}, {BTN_FX, 2, 4}};
+    {BTN_SEL, 0, 1}, {BTN_EDIT, 1, 1}, {BTN_ENV, 0, 1}, {BTN_LFO, 1, 1}, {BTN_GLO, 2, 1}, {BTN_FX, 3, 4}};
 #define NSECTION 6u
 static const section_t *sections(void) { return engine_val() == 2u ? SECTION_DR : engine_val() ? SECTION_SI : SECTION_PV; }
 
@@ -1219,9 +1223,13 @@ static void app_main(void)
     load_banks();
     p = (uint32_t)settings_load(&set, sizeof set);
     if (p) {                                    /* the settings of the builds before the mixer (5 + 92 bytes) and before the sequencer (5 + 84): carry them over */
-        uint8_t od[5u + FX2_P], ob[5u + SQ2_P], oc[5u + SQ_P], oe[5u + CH_P], of[5u + AR_P];
+        uint8_t od[5u + FX2_P], ob[5u + SQ2_P], oc[5u + SQ_P], oe[5u + CH_P], of[5u + AR_P], og[5u + SUB_P];
         uint32_t mig = 0;                                       /* carried over from an older layout: the second echo starts at its defaults */
-        if (!settings_load(of, sizeof of)) {                     /* the build before the arpeggiator and the scale: they start off */
+        if (!settings_load(og, sizeof og)) {                     /* the build before the kick's sub: it starts off */
+            for (k = 0; k < sizeof og; k++) ((uint8_t *)&set)[k] = og[k];
+            for (k = SUB_P; k < NPARAM; k++) set.p[k] = param(k)->def;
+            p = 0;
+        } else if (!settings_load(of, sizeof of)) {                     /* the build before the arpeggiator and the scale: they start off */
             for (k = 0; k < sizeof of; k++) ((uint8_t *)&set)[k] = of[k];
             for (k = AR_P; k < NPARAM; k++) set.p[k] = param(k)->def;
             p = 0;
