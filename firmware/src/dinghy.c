@@ -440,17 +440,17 @@ static void pattern_load(unsigned t, uint32_t slot)
     trk[t].live = (uint8_t)nx;
     trk[t].dirty = 0; pat_ver++;
 }
-/* factory drum patterns: seeded once into the first empty slots of the drums' bank (a marker in the last slot's spare byte keeps them from
+/* factory drum patterns (each with its tempo, set when you pick it): seeded once into the first empty slots of the drums' bank (a marker in the last slot's spare byte keeps them from
  * coming back after you clear one). r0 of a slot holds the pattern's number + 1 for its name (an edit saved over it drops the name). */
-typedef struct { const char *name; const char *kick, *snare, *clave, *chat, *ohat, *acc; } fpat_t;
+typedef struct { const char *name; uint8_t bpm; const char *kick, *snare, *clave, *chat, *ohat, *acc; } fpat_t;
 static const fpat_t FPAT[] = {
-    {"THE FUNKY DRUMMER", "x.x...x...x..x..", "....x..x.x.xx..x", "................", "xxxxxxx.xxxxx.xx", ".......x.....x..", "................"},
-    {"IMPEACH THE PRESIDENT", "x......xx.....x.", "....x.......x...", "................", "x.x.x.xxx...x.x.", "..........x.....", "................"},
-    {"WHEN THE LEVEE BREAKS", "xx.....x..xx....", "....x.......x...", "................", "x.x.x.x.x.x.x.x.", "................", "................"},
-    {"WALK THIS WAY", "x......xx.x.....", "....x.......x...", "................", "..x.x.x.x.x.x.x.", "x...............", "................"},
-    {"STEPPERS", "x...x...x...x...", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "x...x...x...x..."},
-    {"ONE-DROP", "........x.......", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "x...x...x...x..."},
-    {"ROCKERS", "x.x.x.x.x.x.x.x.", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "x...x...x...x..."},
+    {"THE FUNKY DRUMMER", 96, "x.x...x...x..x..", "....x..x.x.xx..x", "................", "xxxxxxx.xxxxx.xx", ".......x.....x..", "................"},
+    {"IMPEACH THE PRESIDENT", 96, "x......xx.....x.", "....x.......x...", "................", "x.x.x.xxx...x.x.", "..........x.....", "................"},
+    {"WHEN THE LEVEE BREAKS", 72, "xx.....x..xx....", "....x.......x...", "................", "x.x.x.x.x.x.x.x.", "................", "................"},
+    {"WALK THIS WAY", 105, "x......xx.x.....", "....x.......x...", "................", "..x.x.x.x.x.x.x.", "x...............", "................"},
+    {"STEPPERS", 80, "x...x...x...x...", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "x...x...x...x..."},
+    {"ONE-DROP", 80, "........x.......", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "x...x...x...x..."},
+    {"ROCKERS", 80, "x.x.x.x.x.x.x.x.", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "x...x...x...x..."},
 };
 #define NFPAT ((uint32_t)(sizeof FPAT / sizeof FPAT[0]))
 static const char *pat_name(unsigned t, uint32_t slot)    /* the name of a factory pattern in a slot, or 0 */
@@ -459,6 +459,13 @@ static const char *pat_name(unsigned t, uint32_t slot)    /* the name of a facto
     if (t != 0u || slot >= NPAT || !pbank[0].used[slot]) return 0;
     id = pbank[0].p[slot].r0;
     return id >= 1u && id <= NFPAT ? FPAT[id - 1u].name : 0;
+}
+static unsigned pat_bpm(unsigned t, uint32_t slot)         /* the tempo a factory pattern is meant for, or 0 */
+{
+    unsigned id;
+    if (t != 0u || slot >= NPAT || !pbank[0].used[slot]) return 0;
+    id = pbank[0].p[slot].r0;
+    return id >= 1u && id <= NFPAT ? FPAT[id - 1u].bpm : 0u;
 }
 static void factory_patterns(void)
 {
@@ -1465,7 +1472,7 @@ static void app_main(void)
                 v = (int32_t)val[q] + step;
                 v = v < 0 ? 0 : v > (int32_t)mx ? (int32_t)mx : v;
                 if ((uint32_t)v != val[q]) {
-                    if (q == sqi(SEQ_PATTERN)) { if (TK.dirty) pattern_store(tsel(), val[q]); set_param(q, (unsigned)v); pattern_load(tsel(), (uint32_t)v); { const char *pn = pat_name(tsel(), (uint32_t)v); if (pn) say(pn, 1200); } }
+                    if (q == sqi(SEQ_PATTERN)) { if (TK.dirty) pattern_store(tsel(), val[q]); set_param(q, (unsigned)v); pattern_load(tsel(), (uint32_t)v); { const char *pn = pat_name(tsel(), (uint32_t)v); unsigned bp = pat_bpm(tsel(), (uint32_t)v); if (bp) set_param(sqi(SEQ_TEMPO), bp - 40u); if (pn) say(pn, 1200); } }
                     else set_param(q, (unsigned)v);
                     if (q >= MIX_P) { }                                            /* (the mix is the song's, not a preset's) */
                     else if (q >= SQ_P) { if (q != sqi(SEQ_PATTERN) && q != SQ_P + SEQ_SYNC && q != SQ_P + SEQ_TEMPO && q != SQ_P + SEQ_SWING) { TK.dirty = 1; TK.dirty_t = fm1_ms; } }
