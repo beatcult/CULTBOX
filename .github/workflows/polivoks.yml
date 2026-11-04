@@ -63,11 +63,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -l build/*.fwsc
-          cp build/dinghy.fwsc polivoks-dinghy.fwsc
-          gh release delete polivoks-latest --yes --cleanup-tag 2>/dev/null || true
-          gh release create polivoks-latest polivoks-dinghy.fwsc --prerelease \
-              --title "BEAT CULT (latest build)" --notes "Built from ${GITHUB_SHA}" --target "${GITHUB_SHA}"
+          cp build/cultbox.fwsc cultbox.fwsc
+          gh release delete cultbox-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create cultbox-latest cultbox.fwsc --prerelease \
+              --title "CULTBOX (latest build)" --notes "Built from ${GITHUB_SHA}" --target "${GITHUB_SHA}"
       - uses: actions/upload-artifact@v4
         with:
-          name: polivoks-dinghy
-          path: build/dinghy.fwsc
+          name: cultbox
+          path: build/cultbox.fwsc

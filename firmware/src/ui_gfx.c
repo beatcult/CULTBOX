@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* Integer-only drawing helpers for the BEAT CULT screens (the main loop has no float unit): sine table, square root,
+/* Integer-only drawing helpers for the CULTBOX screens (the main loop has no float unit): sine table, square root,
  * anti-aliased discs and rings on the small canvas (gfx.c). Positions are in quarter pixels. */
 static const int16_t UI_SIN[91] = {
     0, 286, 572, 857, 1143, 1428, 1713, 1997, 2280, 2563, 2845, 3126, 3406,

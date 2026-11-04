@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* BEAT CULT for the M-VAVE FM-1: three engines, PLVKS (a duophonic Formanta Polivoks-style voice), DUBMARINE (a dub siren) and DRUMS (sampled drums),
+/* CULTBOX for the M-VAVE FM-1: three engines, PLVKS (a duophonic Formanta Polivoks-style voice), DUBMARINE (a dub siren) and DRUMS (sampled drums),
  * sharing a BBD echo, on the Dinghy platform (platform.c: updates, USB rescue, USB-MIDI, keys, knobs, screen, flash).
  *
  *   keys       play the voice (two notes at once: the newest two held notes sound)
@@ -422,7 +422,7 @@ static void pattern_store(unsigned t, uint32_t slot)
     pb->p[slot].tempo = val[sqi(SEQ_TEMPO)]; pb->p[slot].swing = val[sqi(SEQ_SWING)]; pb->p[slot].len = val[sqp(t, SEQ_LEN)];
     pb->p[slot].rate = val[sqp(t, SEQ_RATE)]; pb->p[slot].hit = val[sqp(t, SEQ_HIT)]; pb->p[slot].acc = val[sqp(t, SEQ_ACC)];
     for (k = 0; k < SEQ_PAT_BYTES; k++) pb->p[slot].d[k] = st[k];
-    pb->used[slot] = 1;
+    pb->used[slot] = 1; pb->p[slot].r0 = 0;
     trk[t].dirty = 0;
     if (slot_save(t, pb, sizeof *pb)) say("SAVE FAILED", 2000);
 }
@@ -439,6 +439,49 @@ static void pattern_load(unsigned t, uint32_t slot)
     } else seq_clear(trk[t].buf[nx]);                                    /* an empty slot: no steps */
     trk[t].live = (uint8_t)nx;
     trk[t].dirty = 0; pat_ver++;
+}
+/* factory drum patterns: seeded once into the first empty slots of the drums' bank (a marker in the last slot's spare byte keeps them from
+ * coming back after you clear one). r0 of a slot holds the pattern's number + 1 for its name (an edit saved over it drops the name). */
+typedef struct { const char *name; const char *kick, *snare, *clave, *chat, *ohat, *acc; } fpat_t;
+static const fpat_t FPAT[] = {
+    {"THE FUNKY DRUMMER", "x.x...x...x..x..", "....x..x.x.xx..x", "................", "xxxxxxx.xxxxx.xx", ".......x.....x..", "................"},
+    {"IMPEACH THE PRESIDENT", "x......xx.....x.", "....x.......x...", "................", "x.x.x.xxx...x.x.", "..........x.....", "................"},
+    {"WHEN THE LEVEE BREAKS", "xx.....x..xx....", "....x.......x...", "................", "x.x.x.x.x.x.x.x.", "................", "................"},
+    {"WALK THIS WAY", "x......xx.x.....", "....x.......x...", "................", "..x.x.x.x.x.x.x.", "x...............", "................"},
+    {"STEPPERS", "x...x...x...x...", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "x...x...x...x..."},
+    {"ONE-DROP", "........x.......", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "x...x...x...x..."},
+    {"ROCKERS", "x.x.x.x.x.x.x.x.", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "x...x...x...x..."},
+};
+#define NFPAT ((uint32_t)(sizeof FPAT / sizeof FPAT[0]))
+static const char *pat_name(unsigned t, uint32_t slot)    /* the name of a factory pattern in a slot, or 0 */
+{
+    unsigned id;
+    if (t != 0u || slot >= NPAT || !pbank[0].used[slot]) return 0;
+    id = pbank[0].p[slot].r0;
+    return id >= 1u && id <= NFPAT ? FPAT[id - 1u].name : 0;
+}
+static void factory_patterns(void)
+{
+    uint32_t i, slot = 0, k, s;
+    if (pbank[0].p[NPAT - 1u].r1 == 0xA5u) return;
+    for (i = 0; i < NFPAT; i++) {
+        const fpat_t *f = &FPAT[i];
+        const char *rows[5];
+        static const uint8_t pad[5] = {0, 1, 6, 8, 9};            /* Kick, Snr 1, Clave (the side stick), Hat C, Hat O */
+        while (slot < NPAT - 1u && pbank[0].used[slot]) slot++;
+        if (slot >= NPAT - 1u) break;                             /* (the last slot keeps the marker: it stays free of factory patterns) */
+        rows[0] = f->kick; rows[1] = f->snare; rows[2] = f->clave; rows[3] = f->chat; rows[4] = f->ohat;
+        seq_clear(pbank[0].p[slot].d);
+        for (s = 0; s < 16u; s++) {
+            unsigned a = f->acc[s] == 'x' ? 2u : 1u;
+            for (k = 0; k < 5u; k++) if (rows[k][s] == 'x') seq_put(pbank[0].p[slot].d, s, pad[k], a);
+        }
+        pbank[0].p[slot].tempo = 60; pbank[0].p[slot].swing = 0; pbank[0].p[slot].len = 0; pbank[0].p[slot].rate = 1;
+        pbank[0].p[slot].hit = 90; pbank[0].p[slot].acc = 127; pbank[0].p[slot].r0 = (uint8_t)(i + 1u);
+        pbank[0].used[slot] = 1;
+    }
+    pbank[0].p[NPAT - 1u].r1 = 0xA5u;
+    slot_save(0, &pbank[0], sizeof pbank[0]);
 }
 static void load_banks(void)                    /* at boot: both tracks' pattern banks */
 {
@@ -458,6 +501,7 @@ static void load_banks(void)                    /* at boot: both tracks' pattern
             }
         }
     }
+    factory_patterns();
 }
 static uint32_t last_step_note = 48;            /* the note a new PLVKS step starts with: the last one edited */
 static uint32_t aud_n[2] = {255, 255}, aud_t;   /* an audition: the notes sounding, and since when */
@@ -1121,14 +1165,14 @@ static void draw_logo(uint32_t x, uint32_t y, uint32_t inv)   /* inv: black on a
     }
     cv_blit(x, y);
 }
-static void splash(void)                        /* the boot screen: the BEAT CULT sleeper, the name, the engines */
+static void splash(void)                        /* the boot screen: the CULTBOX sleeper, the name, the engines */
 {
     uint32_t i, t0;
     int32_t w;
     lcd_fill(0, 0, 240, 240, C_BLACK);
     draw_logo(60, 20, 0);
-    w = text_w(&FONT_L, "BEAT CULT");
-    draw_text_box((uint32_t)(120 - w / 2) - 10u, 156, (uint32_t)w + 20u, &FONT_L, "BEAT CULT", C_CREAM, 1);
+    w = text_w(&FONT_L, "CULTBOX");
+    draw_text_box((uint32_t)(120 - w / 2) - 10u, 156, (uint32_t)w + 20u, &FONT_L, "CULTBOX", C_CREAM, 1);
     draw_text_box(0, 200, 240, &FONT_S, "PLVKS  DUBMARINE  DRUMS", C_CREAM_DIM, 1);
     lcd_sync();
     t0 = fm1_ms;
@@ -1421,7 +1465,7 @@ static void app_main(void)
                 v = (int32_t)val[q] + step;
                 v = v < 0 ? 0 : v > (int32_t)mx ? (int32_t)mx : v;
                 if ((uint32_t)v != val[q]) {
-                    if (q == sqi(SEQ_PATTERN)) { if (TK.dirty) pattern_store(tsel(), val[q]); set_param(q, (unsigned)v); pattern_load(tsel(), (uint32_t)v); }
+                    if (q == sqi(SEQ_PATTERN)) { if (TK.dirty) pattern_store(tsel(), val[q]); set_param(q, (unsigned)v); pattern_load(tsel(), (uint32_t)v); { const char *pn = pat_name(tsel(), (uint32_t)v); if (pn) say(pn, 1200); } }
                     else set_param(q, (unsigned)v);
                     if (q >= MIX_P) { }                                            /* (the mix is the song's, not a preset's) */
                     else if (q >= SQ_P) { if (q != sqi(SEQ_PATTERN) && q != SQ_P + SEQ_SYNC && q != SQ_P + SEQ_TEMPO && q != SQ_P + SEQ_SWING) { TK.dirty = 1; TK.dirty_t = fm1_ms; } }
@@ -1448,7 +1492,7 @@ static void app_main(void)
             else if (seqmode && home) {                                   /* HOME + SEQ: clear the pattern */
                 seq_clear(PAT); stepedit = -1;
                 touch_pat(); say("PATTERN CLEARED", 1500);
-            } else if (engine_val() != 1u) { seqmode = !seqmode; stepedit = -1; held_k = 255u; seqpg = 0; seqview = 0; page_drawn = ~0u; pat_ver++; }
+            } else if (engine_val() != 1u) { seqmode = !seqmode; stepedit = -1; held_k = 255u; seqpg = 0; page = 0; seqview = 0; page_drawn = ~0u; pat_ver++; }
             else say("SEQ: PLVKS OR DRUMS", 1200);
         }
         if (b & (1u << BTN_ARP) && !home) {                              /* ARP: off, on, latch (HOME + ARP in SEQ copies a bar instead) */

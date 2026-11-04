@@ -17,7 +17,7 @@ works: `./build.sh` and `tests/run_host.sh` (see the [README](../README.md)).
   #define APP_NAME "MYSYNTH"        /* the rescue and the crash screen say this */
   ```
 
-- The package file names (`dinghy.fwsc`) are in `tools/build.py` and `.github/workflows/release.yml`: search for
+- The package file names (`cultbox.fwsc`) are in `tools/build.py` and `.github/workflows/release.yml`: search for
   `dinghy`.
 - The update loader's screen (FM-1) shows `SCREEN_NAME` in `SCREEN_COLOUR` (RGB565), both in `tools/build.py`.
 - Your data: a `STORE_MAGIC` of your own in `firmware/src/store.h`, so your firmware never reads another Dinghy fork's
@@ -39,7 +39,7 @@ hub use it to tell firmwares apart: two firmwares with the same identity look li
 ## 4. Release
 
 ```sh
-./build.sh --release 0.2        # -> build/dinghy-0.2.fwsc, identity FM-1_992, the version "0.2" on the screen
+./build.sh --release 0.2        # -> build/cultbox-0.2.fwsc, identity FM-1_992, the version "0.2" on the screen
 ```
 
 On GitHub: a release with a tag (`v0.2`) and the `.fwsc` attached. Say what changed in its notes: the hub links

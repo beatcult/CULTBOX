@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* BEAT CULT logo: 120 x 120, 4 bits of ink per pixel (high nibble first). Made from the SVG by tools/make_logo.py */
+/* CULTBOX logo: 120 x 120, 4 bits of ink per pixel (high nibble first). Made from the SVG by tools/make_logo.py */
 #define LOGO_W 120u
 #define LOGO_H 120u
 static const uint8_t LOGO[7200] = {

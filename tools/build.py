@@ -6,13 +6,13 @@
   tools/build.py [--release X.Y[-suffix]] [--board fm1|smk37] [--model pro|elite|mke]
 
 Outputs in build/: dinghy.bin (app), loader/ota.bin (update loader),
-dinghy.fwsc (package). See README.md for the toolchain and the SDK.
+cultbox.fwsc (package). See README.md for the toolchain and the SDK.
 
 --board smk37 (or BOARD=smk37) builds for the M-Vave SMK-37 (docs/SMK37.md): -DBOARD_SMK37=1 for the app and the
 loader, identity SMK-37 Pro_990 (release X.Y: SMK-37 Pro_99Y), the SMK flash layout (fm1pkg_make.py, app slot
-0x97400), the package build/dinghy-smk37.fwsc. --model elite / mke (or MODEL=) with smk37: the same build under the
+0x97400), the package build/cultbox-smk37.fwsc. --model elite / mke (or MODEL=) with smk37: the same build under the
 SMK-37 Elite's or the MKE-P37's model name (identity, loader and update record; -DSMK_MODEL), so M-Vave's updater
-still takes that unit's factory package: dinghy-smk37-elite.fwsc, -mke.fwsc. The default stays the FM-1.
+still takes that unit's factory package: cultbox-smk37-elite.fwsc, -mke.fwsc. The default stays the FM-1.
 
 The JieLi toolchain is Linux x86-64 only. JIELI_TOOLCHAIN points at it; on
 macOS (or with JIELI_DOCKER=1) each tool runs in a linux/amd64 container.
@@ -59,7 +59,7 @@ BOARD_PREFIX = {"fm1": "FM-1_99", "smk37": "SMK-37 Pro_99"}   # identity: prefix
 BOARD_DEFS = {"fm1": [], "smk37": ["-DBOARD_SMK37=1"]}
 MODELS = {"pro": "SMK-37 Pro", "elite": "SMK-37 Elite", "mke": "MKE-P37"}   # smk37: one keyboard, three names
 DATA_FAMILY = "DINGHY"              # the SMK store's owner tag (store.h): 1..7 of A-Z 0-9. Your fork: your own
-SCREEN_NAME = "BEAT CULT"              # the update loader's screen (FM-1, ldr_screen.c): the name and its colour (RGB565)
+SCREEN_NAME = "CULTBOX"              # the update loader's screen (FM-1, ldr_screen.c): the name and its colour (RGB565)
 SCREEN_COLOUR = 0xEF18              # cream, #ECE2C4
 PRODUCT = "FM-1_990"                # Dinghy: 99N (OUR_LOADER in the installer wants FM-1_9NN). Your fork: pick your own
 VERSION = None                      # APP_VER for release builds
@@ -167,7 +167,7 @@ def build_loader():
 
 def build_app():
     flags = [*CFLAGS, *BOARD_DEFS[BOARD], "-Ifirmware/hal", "-Ifirmware/src", "-Ifirmware/gen", f'-DFELUCCA_ID="{PRODUCT}"',
-             f'-DAPP_VER="{VERSION or "0.0"}"', '-DAPP_NAME="BEAT CULT"']
+             f'-DAPP_VER="{VERSION or "0.0"}"', '-DAPP_NAME="CULTBOX"']
     if BOARD == "smk37":
         if not re.fullmatch(r"[A-Z0-9]{1,7}", DATA_FAMILY):
             raise SystemExit("DATA_FAMILY: 1..7 of A-Z 0-9")
@@ -319,14 +319,14 @@ def main():
         BOARD_PREFIX[BOARD] = BOARD_PREFIX[BOARD].replace(MODELS["pro"], MODELS[model])
         suffix += "-" + model
     PRODUCT = BOARD_PREFIX[BOARD] + "0"
-    name = f"dinghy{suffix}.fwsc"
+    name = f"cultbox{suffix}.fwsc"
     if a.release:                   # one digit each: the identity has room for two (X.Y; a .Z only in the text)
         m = re.fullmatch(r"(\d)\.(\d)(\.\d)?(-[A-Za-z0-9]+)?", a.release)
         if not m:
             raise SystemExit(f"--release {a.release}: use X.Y, X.Y.Z or X.Y-suffix, one digit each")
         PRODUCT = BOARD_PREFIX[BOARD] + m[2]
         VERSION = m[1] + "." + m[2] + (m[3] or "")
-        name = f"dinghy-{a.release}{suffix}.fwsc"
+        name = f"cultbox-{a.release}{suffix}.fwsc"
     fm1pkg_make.SDK = a.sdk
     for rel, sha in SDK_SHA256.items():          # fail early without the SDK
         if hashlib.sha256(fm1pkg_make.sdk_file(rel)).hexdigest() != sha:

@@ -13,9 +13,9 @@ runs on real SMK-37s.
 ## Build
 
 ```sh
-./build.sh --board smk37                 # SMK-37 Pro:   build/dinghy-smk37.fwsc,       identity SMK-37 Pro_990
-./build.sh --board smk37 --model elite   # SMK-37 Elite: build/dinghy-smk37-elite.fwsc, identity SMK-37 Elite_990
-./build.sh --board smk37 --model mke     # MKE-P37:      build/dinghy-smk37-mke.fwsc,   identity MKE-P37_990
+./build.sh --board smk37                 # SMK-37 Pro:   build/cultbox-smk37.fwsc,       identity SMK-37 Pro_990
+./build.sh --board smk37 --model elite   # SMK-37 Elite: build/cultbox-smk37-elite.fwsc, identity SMK-37 Elite_990
+./build.sh --board smk37 --model mke     # MKE-P37:      build/cultbox-smk37-mke.fwsc,   identity MKE-P37_990
 ./build.sh                               # the FM-1 (build it last: the tests read its binaries)
 ```
 
@@ -31,7 +31,7 @@ fader (`T fader F V`) or a wheel (`T wheel W RAW`), set the velocity of the keys
 The same installer as for the FM-1; it knows the SMK-37's names:
 
 ```sh
-python3 tools/fm1_install.py build/dinghy-smk37.fwsc --yes
+python3 tools/fm1_install.py build/cultbox-smk37.fwsc --yes
 ```
 
 Back to the stock firmware: M-Vave's updater with the unit's factory package, or the

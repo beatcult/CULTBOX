@@ -1,0 +1,17 @@
+# factory drum patterns: seeded into the empty slots at the first boot; the Pattern knob names them
+200 enc 1 1
+300 btn 11
+400 enc 0 1
+500 shot
+600 enc 2 1
+650 shot
+700 enc 2 1
+750 shot
+800 btn 12
+3000 shot
+4000 btn 12
+4100 enc 2 6
+4200 shot
+4300 enc 2 1
+4400 shot
+5000 end 5100

@@ -94,8 +94,8 @@ are read there too: change the text, add a knob ([docs/API.md](docs/API.md) has 
 ### 5. Onto the FM-1
 
 ```sh
-./build.sh                                       # -> build/dinghy.fwsc (fails on what would brick the FM-1)
-python3 tools/fm1_install.py build/dinghy.fwsc   # over USB; asks before it writes, restarts into your build
+./build.sh                                       # -> build/cultbox.fwsc (fails on what would brick the FM-1)
+python3 tools/fm1_install.py build/cultbox.fwsc   # over USB; asks before it writes, restarts into your build
 python3 tools/fm1_install.py --info              # what runs on the connected FM-1
 ```
 
