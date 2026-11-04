@@ -1,0 +1,17 @@
+# REC armed, arpeggiator off: play keys by hand while the pattern runs; they land on the nearest steps
+100 enc 1 1
+150 enc 1 1
+250 btn 13
+300 btn 12
+500 keys 0x1
+600 keys 0
+900 keys 0x10
+1000 keys 0
+1300 keys 0x200
+1400 keys 0
+1700 keys 0x1000
+1800 keys 0
+2500 btn 12
+2700 btn 11
+2800 shot
+3000 end 3100
