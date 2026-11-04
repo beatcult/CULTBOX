@@ -2,8 +2,10 @@
 
 # CULTBOX
 
+The [user manual](https://cult-box.netlify.app/) can be found here
+
 CULTBOX is based on [Dinghy](https://github.com/zvenson/dinghy) by Sven Trogus, which is based on [Felucca](https://github.com/hugelton/Felucca) by Leo Kuroshita (Hügelton Instruments), with its
-platform as [SLOOP](https://github.com/isod89/sloop-fm1) (isod89) carries it: it keeps that platform and throws away the rest. 
+platform as [SLOOP](https://github.com/isod89/sloop-fm1) (isod89) carries it.
 
 ## License
 
