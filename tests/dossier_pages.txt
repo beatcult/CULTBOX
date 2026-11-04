@@ -1,0 +1,64 @@
+# dossier screenshots
+50 shot
+3500 shot
+3600 shot
+4000 enc 1 1
+4300 shot
+4400 enc 0 1
+4650 shot
+4750 enc 0 1
+5000 shot
+5100 enc 0 1
+5350 shot
+5450 enc 0 1
+5700 shot
+5800 enc 0 1
+6050 shot
+6150 enc 0 1
+6400 shot
+6500 enc 0 1
+6750 enc 1 1
+7050 shot
+7150 enc 0 1
+7400 shot
+7500 enc 0 1
+7750 shot
+7850 enc 0 1
+8100 shot
+8200 enc 0 1
+8450 shot
+8550 enc 0 1
+8800 shot
+8900 enc 0 1
+9150 shot
+9250 enc 0 1
+9500 shot
+9600 enc 0 1
+9850 shot
+9950 enc 0 1
+10200 shot
+10300 enc 0 1
+10550 shot
+10650 enc 0 1
+10900 shot
+11000 enc 0 1
+11250 shot
+11350 enc 0 1
+11600 shot
+11700 enc 0 1
+11950 enc 1 1
+12250 shot
+12350 enc 0 1
+12600 shot
+12700 enc 0 1
+12950 shot
+13050 enc 0 1
+13300 shot
+13400 enc 0 1
+13650 shot
+13750 enc 0 1
+14000 shot
+14100 enc 0 1
+14350 shot
+14450 enc 0 1
+14700 end 14800

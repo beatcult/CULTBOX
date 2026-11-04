@@ -1,0 +1,20 @@
+# screens for the dossier edition: PLVKS notes recorded by hand, then the step edit
+100 enc 1 1
+150 enc 1 1
+250 btn 13
+300 btn 12
+500 keys 0x1
+600 keys 0
+900 keys 0x10
+1000 keys 0
+1300 keys 0x200
+1400 keys 0
+1700 keys 0x1000
+1800 keys 0
+2500 btn 12
+2700 btn 11
+2800 shot
+3000 keys 0x20
+3100 btn 6
+3300 shot
+3400 end 3500

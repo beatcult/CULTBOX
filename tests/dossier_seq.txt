@@ -1,0 +1,27 @@
+# dossier screenshots: drum sequencer with a factory pattern running, PLVKS pattern recorded by hand and a step opened for edit
+100 enc 1 1
+200 btn 11
+300 btn 12
+1500 shot
+1600 btn 12
+1700 btn 11
+1800 enc 1 1
+1900 btn 13
+2000 btn 12
+2200 keys 0x1
+2300 keys 0
+2600 keys 0x10
+2700 keys 0
+3000 keys 0x200
+3100 keys 0
+3400 keys 0x1000
+3500 keys 0
+4200 btn 12
+4300 btn 13
+4400 btn 11
+4500 shot
+4600 keys 0x2
+4700 btn 6
+4800 shot
+4900 keys 0
+5000 end 5100
