@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/logo.svg" width="96" alt="Dinghy"></p>
+<p align="center"><img src="assets/sleepr.svg" width="96" alt="CULTBOX"></p>
 
 # Dinghy
 
