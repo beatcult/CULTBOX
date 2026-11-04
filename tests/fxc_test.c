@@ -1,5 +1,5 @@
 /* Per-channel effects: off is transparent; each saturation model is finite, bounded and changes the sound; tape delays by a fixed
- * amount, wobbles the pitch and darkens; vintage darkens and hisses. */
+ * amount, wobbles the pitch and darkens; vintage darkens (no hiss). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -72,13 +72,13 @@ int main(void)
             if (pass) CHECK(mx - mn > 0.04 && mx / mn < 1.12, "wow moves the pitch, by less than two semitones"); else CHECK(mx - mn < 0.05, "no wow: steady");
         }
     }
-    { /* age and vintage darken: a 10 kHz tone loses level; vintage on silence makes hiss */
+    { /* age and vintage darken: a 10 kHz tone loses level; vintage adds no hiss: silence stays silent */
         fxc_reset(); fxc_set(0, FXC_VINT, 127);
         make(10000, 0.3); run(0);
         double r = rms(io + 128 * 20, 128 * 100); CHECK(r < 0.3 * 0.7071 * 0.7, "vintage darkens 10 kHz (rms %.3f of %.3f)", r, 0.3 * 0.7071);
         fxc_reset(); fxc_set(0, FXC_VINT, 127);
         memset(io, 0, sizeof io); run(0);
-        r = rms(io, NB * 128); CHECK(r > 0.00003 && r < 0.002, "vintage hiss on silence: rms %.6f", r);
+        r = rms(io, NB * 128); CHECK(r < 1e-7, "vintage adds no hiss on silence: rms %.8f", r);
         fxc_reset(); fxc_set(1, FXC_TMIX, 127); fxc_set(1, FXC_TDRIVE, 0); fxc_set(1, FXC_WOW, 0); fxc_set(1, FXC_AGE, 127);
         make(10000, 0.3); run(1);
         r = rms(io + 128 * 20, 128 * 100); CHECK(r < 0.3 * 0.7071 * 0.5, "tape age darkens 10 kHz (rms %.3f)", r);

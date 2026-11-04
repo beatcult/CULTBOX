@@ -1,0 +1,12 @@
+# factory drum patterns: short names, no accents on the reggae three, their tempo
+200 enc 1 1
+300 btn 11
+400 enc 0 1
+500 enc 2 1
+700 enc 2 1
+900 enc 2 1
+1100 enc 2 1
+1300 enc 2 1
+1350 enc 0 1
+1450 shot
+1500 end 1600

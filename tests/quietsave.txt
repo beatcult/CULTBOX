@@ -1,0 +1,10 @@
+# flash writes wait for quiet: a knob turned while a pattern plays is saved only after it stops (and the sound has died away)
+200 enc 1 1
+300 btn 11
+350 enc 0 1
+400 enc 2 1
+500 btn 12
+600 enc 0 1
+700 enc 3 5
+4000 btn 12
+9000 end 9100

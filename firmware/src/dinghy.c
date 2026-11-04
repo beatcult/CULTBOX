@@ -104,7 +104,7 @@ typedef struct {                                /* a sequenced track: 0 drums, 1
     seq_t q;
     uint8_t buf[2][SEQ_PAT_BYTES] __attribute__((aligned(4)));   /* the pattern the ISR plays, and one to load the next into */
     volatile uint8_t live;
-    uint8_t dirty; uint32_t dirty_t;
+    uint8_t dirty, flash_due; uint32_t dirty_t;
 } trk_t;
 static trk_t trk[2];
 static arp_t arp;                               /* the PLVKS keys' arpeggiator (ISR) */
@@ -133,6 +133,7 @@ static void plvks_key(unsigned note, unsigned vel, unsigned raw)      /* a key o
     polivoks_bank_note((polivoks_bank_t *)bank_store, note, vel, 0);
     if (!raw) rec_hook(note, vel);
 }
+static volatile uint32_t loud_ms;               /* when a channel last made a sound (flash writes wait for quiet: an erase drops the sound for ~50 ms) */
 static volatile uint16_t tpeak[3];              /* the loudest sample of each channel (Q15) since the main loop last looked */
 static void apply(unsigned p, unsigned v)       /* ISR side */
 {
@@ -182,6 +183,7 @@ static void mix_in(uint32_t c, uint32_t g, uint32_t gs, int32_t *bus)   /* tmp i
     pk >>= 8;
     if (pk > 32767u) pk = 32767u;
     if (pk > tpeak[c]) tpeak[c] = (uint16_t)pk;
+    if (pk > 40u) loud_ms = fm1_ms;                 /* (about -58 dB: something is sounding) */
 }
 static void app_audio(int32_t *out, uint32_t n)
 {
@@ -413,6 +415,7 @@ static uint32_t pat_ver;
 #define bank_kind (tsel() == 0u ? SEQ_KIND_DRUMS : SEQ_KIND_PLVKS)
 static uint32_t cur_pat_t(unsigned t) { return val[sqp(t, SEQ_PATTERN)]; }
 static uint32_t cur_pat(void) { return cur_pat_t(tsel()); }
+static uint8_t explicit_save;                   /* SAVE was pressed: write now, whatever plays */
 static void pattern_store(unsigned t, uint32_t slot)
 {
     uint32_t k;
@@ -424,7 +427,8 @@ static void pattern_store(unsigned t, uint32_t slot)
     for (k = 0; k < SEQ_PAT_BYTES; k++) pb->p[slot].d[k] = st[k];
     pb->used[slot] = 1; pb->p[slot].r0 = 0;
     trk[t].dirty = 0;
-    if (slot_save(t, pb, sizeof *pb)) say("SAVE FAILED", 2000);
+    if (explicit_save || (!trk[0].q.run && !trk[1].q.run && fm1_ms - loud_ms > 1500u)) { if (slot_save(t, pb, sizeof *pb)) say("SAVE FAILED", 2000); trk[t].flash_due = 0; }
+    else trk[t].flash_due = 1;                                           /* a pattern switched while it plays: the bank is written when the sound stops */
 }
 static void set_param(unsigned p, unsigned v);
 static void pattern_load(unsigned t, uint32_t slot)
@@ -444,13 +448,13 @@ static void pattern_load(unsigned t, uint32_t slot)
  * coming back after you clear one). r0 of a slot holds the pattern's number + 1 for its name (an edit saved over it drops the name). */
 typedef struct { const char *name; uint8_t bpm; const char *kick, *snare, *clave, *chat, *ohat, *acc; } fpat_t;
 static const fpat_t FPAT[] = {
-    {"THE FUNKY DRUMMER", 96, "x.x...x...x..x..", "....x..x.x.xx..x", "................", "xxxxxxx.xxxxx.xx", ".......x.....x..", "................"},
-    {"IMPEACH THE PRESIDENT", 96, "x......xx.....x.", "....x.......x...", "................", "x.x.x.xxx...x.x.", "..........x.....", "................"},
-    {"WHEN THE LEVEE BREAKS", 72, "xx.....x..xx....", "....x.......x...", "................", "x.x.x.x.x.x.x.x.", "................", "................"},
-    {"WALK THIS WAY", 105, "x......xx.x.....", "....x.......x...", "................", "..x.x.x.x.x.x.x.", "x...............", "................"},
-    {"STEPPERS", 80, "x...x...x...x...", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "x...x...x...x..."},
-    {"ONE-DROP", 80, "........x.......", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "x...x...x...x..."},
-    {"ROCKERS", 80, "x.x.x.x.x.x.x.x.", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "x...x...x...x..."},
+    {"FUNKY", 96, "x.x...x...x..x..", "....x..x.x.xx..x", "................", "xxxxxxx.xxxxx.xx", ".......x.....x..", "................"},
+    {"IMPEACH", 96, "x......xx.....x.", "....x.......x...", "................", "x.x.x.xxx...x.x.", "..........x.....", "................"},
+    {"LEVEE", 72, "xx.....x..xx....", "....x.......x...", "................", "x.x.x.x.x.x.x.x.", "................", "................"},
+    {"WALK", 105, "x......xx.x.....", "....x.......x...", "................", "..x.x.x.x.x.x.x.", "x...............", "................"},
+    {"STEPPERS", 80, "x...x...x...x...", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "................"},
+    {"ONE-DROP", 80, "........x.......", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "................"},
+    {"ROCKERS", 80, "x.x.x.x.x.x.x.x.", "................", "........x.......", "x.x.x.x.x.x.x.x.", "................", "................"},
 };
 #define NFPAT ((uint32_t)(sizeof FPAT / sizeof FPAT[0]))
 static const char *pat_name(unsigned t, uint32_t slot)    /* the name of a factory pattern in a slot, or 0 */
@@ -467,28 +471,44 @@ static unsigned pat_bpm(unsigned t, uint32_t slot)         /* the tempo a factor
     id = pbank[0].p[slot].r0;
     return id >= 1u && id <= NFPAT ? FPAT[id - 1u].bpm : 0u;
 }
+static void write_factory(uint32_t slot, uint32_t i)      /* the pattern FPAT[i] into a slot of the drums' bank */
+{
+    const fpat_t *f = &FPAT[i];
+    const char *rows[5];
+    static const uint8_t pad[5] = {0, 1, 6, 8, 9};            /* Kick, Snr 1, Clave (the side stick), Hat C, Hat O */
+    uint32_t k, s;
+    rows[0] = f->kick; rows[1] = f->snare; rows[2] = f->clave; rows[3] = f->chat; rows[4] = f->ohat;
+    seq_clear(pbank[0].p[slot].d);
+    for (s = 0; s < 16u; s++) {
+        unsigned a = f->acc[s] == 'x' ? 2u : 1u;
+        for (k = 0; k < 5u; k++) if (rows[k][s] == 'x') seq_put(pbank[0].p[slot].d, s, pad[k], a);
+    }
+    pbank[0].p[slot].tempo = 60; pbank[0].p[slot].swing = 0; pbank[0].p[slot].len = 0; pbank[0].p[slot].rate = 1;
+    pbank[0].p[slot].hit = 90; pbank[0].p[slot].acc = 127; pbank[0].p[slot].r0 = (uint8_t)(i + 1u);
+    pbank[0].used[slot] = 1;
+}
 static void factory_patterns(void)
 {
-    uint32_t i, slot = 0, k, s;
-    if (pbank[0].p[NPAT - 1u].r1 == 0xA5u) return;
-    for (i = 0; i < NFPAT; i++) {
-        const fpat_t *f = &FPAT[i];
-        const char *rows[5];
-        static const uint8_t pad[5] = {0, 1, 6, 8, 9};            /* Kick, Snr 1, Clave (the side stick), Hat C, Hat O */
-        while (slot < NPAT - 1u && pbank[0].used[slot]) slot++;
-        if (slot >= NPAT - 1u) break;                             /* (the last slot keeps the marker: it stays free of factory patterns) */
-        rows[0] = f->kick; rows[1] = f->snare; rows[2] = f->clave; rows[3] = f->chat; rows[4] = f->ohat;
-        seq_clear(pbank[0].p[slot].d);
-        for (s = 0; s < 16u; s++) {
-            unsigned a = f->acc[s] == 'x' ? 2u : 1u;
-            for (k = 0; k < 5u; k++) if (rows[k][s] == 'x') seq_put(pbank[0].p[slot].d, s, pad[k], a);
+    uint32_t i, slot = 0, u, changed = 0;
+    for (u = 0; u < NPAT; u++)                                    /* a factory pattern you have not edited follows the table (a fix reaches units that already have it) */
+        if (pbank[0].used[u] && pbank[0].p[u].r0 >= 1u && pbank[0].p[u].r0 <= NFPAT) {
+            uint8_t before[SEQ_PAT_BYTES], same = 1;
+            uint32_t k;
+            for (k = 0; k < SEQ_PAT_BYTES; k++) before[k] = pbank[0].p[u].d[k];
+            write_factory(u, (uint32_t)pbank[0].p[u].r0 - 1u);
+            for (k = 0; k < SEQ_PAT_BYTES; k++) if (before[k] != pbank[0].p[u].d[k]) same = 0;
+            if (!same) changed = 1;
         }
-        pbank[0].p[slot].tempo = 60; pbank[0].p[slot].swing = 0; pbank[0].p[slot].len = 0; pbank[0].p[slot].rate = 1;
-        pbank[0].p[slot].hit = 90; pbank[0].p[slot].acc = 127; pbank[0].p[slot].r0 = (uint8_t)(i + 1u);
-        pbank[0].used[slot] = 1;
+    if (pbank[0].p[NPAT - 1u].r1 != 0xA5u) {
+        for (i = 0; i < NFPAT; i++) {
+            while (slot < NPAT - 1u && pbank[0].used[slot]) slot++;
+            if (slot >= NPAT - 1u) break;                         /* (the last slot keeps the marker: it stays free of factory patterns) */
+            write_factory(slot, i);
+        }
+        pbank[0].p[NPAT - 1u].r1 = 0xA5u;
+        changed = 1;
     }
-    pbank[0].p[NPAT - 1u].r1 = 0xA5u;
-    slot_save(0, &pbank[0], sizeof pbank[0]);
+    if (changed) slot_save(0, &pbank[0], sizeof pbank[0]);
 }
 static void load_banks(void)                    /* at boot: both tracks' pattern banks */
 {
@@ -1420,7 +1440,7 @@ static void app_main(void)
             c = c < 0 ? 0 : c >= (int32_t)NPRESET ? (int32_t)NPRESET - 1 : c;
             if ((uint32_t)c != cur) { load_preset((uint32_t)c); if (mixview) { mixview = 0; page_drawn = ~0u; status_drawn = ~0u; dsp_drawn = ~0u; } dirty = 1; t_change = fm1_ms; }
         }
-        if (b & (1u << BTN_SAVE)) { if (mixview) say("PICK A TRACK TO SAVE", 1200); else if (seqmode) { pattern_store(tsel(), cur_pat()); say("PATTERN SAVED", 1200); } else save_preset(); }
+        if (b & (1u << BTN_SAVE)) { if (mixview) say("PICK A TRACK TO SAVE", 1200); else if (seqmode) { explicit_save = 1; pattern_store(tsel(), cur_pat()); explicit_save = 0; say("PATTERN SAVED", 1200); } else save_preset(); }
         if ((e = fm1_enc_take(ENC_SELECT)) != 0 && seqmode && stepedit >= 0) {   /* browsing: SELECT walks the steps (round the end) */
             int32_t last = (int32_t)(16u * (val[sqi(SEQ_LEN)] + 1u)) - 1, c = stepedit + (e > 0 ? 1 : -1);
             browse_to((uint32_t)(c < 0 ? last : c > last ? 0 : c), 1);
@@ -1637,12 +1657,18 @@ static void app_main(void)
         }
         idle_ok = 0;
 
-        for (k = 0; k < 2u; k++) if (trk[k].dirty && !trk[k].q.run && fm1_ms - trk[k].dirty_t > 2000u) pattern_store(k, cur_pat_t(k));   /* (an erase stalls the sound: not while it plays) */
-        if (dirty && fm1_ms - t_change > 2000u) {   /* 2 s after the change (an erase stalls the sound; the echo may ring, a short click is possible) */
+        {   /* flash writes wait for quiet: nothing sounding for 1.5 s and no pattern running (an erase drops the sound for ~50 ms) */
+            uint32_t quiet = !trk[0].q.run && !trk[1].q.run && fm1_ms - loud_ms > 1500u;
+            for (k = 0; k < 2u; k++) {
+                if (trk[k].dirty && quiet && fm1_ms - trk[k].dirty_t > 2000u) pattern_store(k, cur_pat_t(k));
+                else if (trk[k].flash_due && quiet) { slot_save(k, &pbank[k], sizeof pbank[k]); trk[k].flash_due = 0; }
+            }
+            if (dirty && quiet && fm1_ms - t_change > 2000u) {
             for (p = 0; p < NPARAM; p++) set.p[p] = val[p];
             set.preset = (uint8_t)cur;
             settings_save(&set, sizeof set);
             dirty = 0;
+            }
         }
     }
 }

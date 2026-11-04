@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* Per-channel effects: each channel (drums, PLVKS, DUBMARINE) has its own chain, after the voice and before the mixer:
- *   saturation (five models, 2x oversampled) -> tape (saturation, head bump, wow and flutter, loss) -> vintage (dark, a little hiss).
+ *   saturation (five models, 2x oversampled) -> tape (saturation, head bump, wow and flutter, loss) -> vintage (a little dark).
  * The VINTAGE knob also drifts the voice itself (see polivoks_bank_vintage, dubsiren_vintage, drums_vintage).
  * Everything at 0 is bypassed: no cost and the sound as it was. Float DSP; audio interrupt only; mono Q23 in place. */
 #ifndef FM1_FXCHAIN_H

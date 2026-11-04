@@ -19,7 +19,7 @@ typedef struct {
     uint32_t w, nch;
     float dcur, wph, fph, fph2, wn, fn, bump_lp, lp1, lp2, bump_g, nprev;
     /* vintage */
-    float va, vhiss, vlp;
+    float va, vlp;
     uint32_t rng;
 } fxc_t;
 static fxc_t fcs[FXC_CHANNELS];
@@ -103,7 +103,6 @@ void fxc_set(unsigned c, unsigned p, unsigned v)
     case FXC_VINT: {
         float fcut = 18000.0f * (1.0f - 0.66f * u);                                       /* a little dark: 18 kHz .. 6 kHz */
         f->va = 1.0f - fc_exp(-6.2831853f * fcut / FC_SR);
-        f->vhiss = 0.0008f * u * u;
         break; }
     case FXC_DRIVE: {
         float k = 24.0f * u * u * 0.5f;                                                   /* level kept: full at no drive, -7 dB from drive 3 up */
@@ -193,12 +192,12 @@ void fxc_process(unsigned c, int32_t *buf, unsigned n)
         f->w = w; f->lp1 = lp1; f->lp2 = lp2; f->bump_lp = bl; f->nprev = np;
     }
 
-    if (f->p[FXC_VINT]) {                                  /* vintage: darker and a breath of hiss */
-        const float a = f->va, hs = f->vhiss;
+    if (f->p[FXC_VINT]) {                                  /* vintage: a little darker (no hiss: it wears thin) */
+        const float a = f->va;
         float lp = f->vlp;
         for (i = 0; i < n; i++) {
             lp += a * (x[i] - lp);
-            x[i] = lp + hs * fc_noise(&f->rng);
+            x[i] = lp;
         }
         f->vlp = lp;
     }
