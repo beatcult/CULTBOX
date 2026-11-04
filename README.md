@@ -1,6 +1,6 @@
 <p align="center"><img src="assets/sleepr.svg" width="96" alt="CULTBOX"></p>
 
-# Dinghy
+# CULTBOX
 
 **The smallest firmware for the M-VAVE FM-1 to build your own on.**
 
