@@ -2,7 +2,7 @@
 
 # CULTBOX
 
-**A three-channel groovebox for the M-VAVE FM-1.** Drums, a Polivoks-style synth and a dub siren, each with its own
+**A three-channel filthbox for the M-VAVE FM-1.** Drums, a Polivoks-style synth and a dub siren, each with its own
 sequencer, effects and place in the mix. It runs on the FM-1 by itself: no computer needed once it is installed.
 
 <p align="center">
@@ -16,7 +16,7 @@ sequencer, effects and place in the mix. It runs on the FM-1 by itself: no compu
 | --- | --- |
 | **CH 1 DRUMS** | Ten Elka Drummer One sample pads (tune, decay, level, crush, tone, choke), a sine sub under the kick, a 16 to 64 step sequencer with swing, chance, slide and per-step edits, and seven factory patterns (Funky, Impeach, Levee, Walk, Steppers, One-Drop, Rockers). |
 | **CH 2 PLVKS** | A duophonic voice after the Formanta Polivoks: two oscillators, the filter, looping envelopes and the LFO, with an arpeggiator, scales and a note sequencer you can record into. Presets included. |
-| **CH 3 DUB** | A dub siren after [dubmarine](https://github.com/beatcult/dubmarine): a pitch-swept oscillator, filter, glide on the keys. |
+| **CH 3 DUB** | A dub siren based upon [dubmarine](https://github.com/beatcult/dubmarine): a pitch-swept oscillator, filter, glide on the keys. |
 | **Mix and effects** | Levels, echo sends and **pan** per channel (hard-pan two voices into separate mixer channels with a stereo-to-2-mono Y cable); two BBD-style echoes that can follow the tempo; per channel a vintage low-pass, five saturation models and a tape stage. |
 
 The [user manual](https://cult-box.netlify.app/) (the CULTBOX dossier) is here.
