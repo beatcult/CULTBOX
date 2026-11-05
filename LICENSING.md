@@ -28,7 +28,7 @@ complete source under the same licence too.
 ## Samples and artwork
 
 - `assets/drums/elka/` and the generated `firmware/src/drums_data.h`: drum samples recorded from an Elka Drummer One, converted by `tools/make_drums.py`.
-- The BEAT CULT boot logo (`firmware/src/logo.h`, drawn by `ui_gfx.c`) is beatcult's artwork. Dinghy's own signet (designburg, all rights reserved) is not part of CULTBOX and has been removed.
+- The BEAT CULT logo (`assets/sleepr.svg`, and its bitmap in `firmware/src/logo.h`, drawn by `ui_gfx.c`) is supplied by beatcult and is artwork, not GPL code. Dinghy's own signet (designburg, all rights reserved) is not part of CULTBOX and has been removed.
 
 ## Trademarks
 

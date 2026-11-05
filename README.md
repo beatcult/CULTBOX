@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/sleepr.svg" width="96" alt="CULTBOX"></p>
+
 # CULTBOX
 
 **A three-channel groovebox for the M-VAVE FM-1.** Drums, a Polivoks-style synth and a dub siren, each with its own
@@ -17,7 +19,7 @@ sequencer, effects and place in the mix. It runs on the FM-1 by itself: no compu
 | **CH 3 DUB** | A dub siren after [dubmarine](https://github.com/beatcult/dubmarine): a pitch-swept oscillator, filter, glide on the keys. |
 | **Mix and effects** | Levels, echo sends and **pan** per channel (hard-pan two voices into separate mixer channels with a stereo-to-2-mono Y cable); two BBD-style echoes that can follow the tempo; per channel a vintage low-pass, five saturation models and a tape stage. |
 
-The manual is the [CULTBOX dossier](https://cult-box.netlify.app/).
+The [user manual](https://cult-box.netlify.app/) (the CULTBOX dossier) is here.
 
 ## Install
 
@@ -46,7 +48,7 @@ release. The Firmware Hub's card text lives in `fmhub.json`.
 
 ## Where it comes from
 
-CULTBOX is a fork of **[Dinghy](https://github.com/zvenson/dinghy)** by zvenson, "the smallest firmware for the FM-1 to
+CULTBOX is a fork of **[Dinghy](https://github.com/zvenson/dinghy)** by zvenson (Sven Trogus), "the smallest firmware for the FM-1 to
 build your own on", and everything underneath the instruments is Dinghy's: the update path, USB rescue, MIDI over USB
 and the TRS jack, USB audio, the panel, the screen and the flash storage. Dinghy in turn carries the platform of
 **[Felucca](https://github.com/hugelton/Felucca)** (Leo Kuroshita, Hügelton Instruments) as
