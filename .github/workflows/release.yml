@@ -1,5 +1,6 @@
-# CULTBOX: on a tag vX.Y build the FM-1 package (cultbox.fwsc, identity FM-1_666666), attest it
-# (actions/attest-build-provenance) and publish a live release with it; the notes come from release-notes/vX.Y.md.
+# CULTBOX: a release is made by adding release-notes/vX.Y.md to main (the notes are the release text, vX.Y the tag the
+# workflow creates): it builds the FM-1 package (cultbox.fwsc, identity FM-1_666666), attests it
+# (actions/attest-build-provenance) and publishes a live release with it.
 # The Firmware Hub takes the newest release that has a .fwsc attached, so nothing else publishes one.
 # The JieLi toolchain comes from pkgman.jieliapp.com (tools/get_toolchain.sh), the AC79 SDK from gitee.com, as in
 # sloopDX's and OberVave's workflows. Run by hand (workflow_dispatch) for a test build without a release.
@@ -7,7 +8,8 @@ name: release
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+    paths: ['release-notes/*.md']
   workflow_dispatch:
 
 jobs:
@@ -19,6 +21,15 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Which release
+        id: v
+        run: |
+          t=$(git diff --name-only HEAD^ HEAD -- release-notes | sed -n 's|^release-notes/\(v[0-9]\.[0-9]\)\.md$|\1|p' | tail -1)
+          echo "tag=$t" >> "$GITHUB_OUTPUT"
+          echo "release: ${t:-none (a test build)}"
 
       - uses: actions/setup-python@v5
         with:
@@ -42,7 +53,8 @@ jobs:
 
       - name: Build and check
         run: |
-          if [ "${GITHUB_REF_TYPE}" = tag ]; then sh build.sh --release "${GITHUB_REF_NAME#v}"; else sh build.sh; fi
+          T="${{ steps.v.outputs.tag }}"
+          if [ -n "$T" ]; then sh build.sh --release "${T#v}"; else sh build.sh; fi
           ls -l build/cultbox.fwsc
           calls=$(grep -oE "call [^ ]*__[a-z0-9_]+" build/cultbox.dis | sort -u | head -5 | tr '\n' ' ')
           echo "software-float helper calls: ${calls:-none}"
@@ -54,18 +66,22 @@ jobs:
           path: build/cultbox.fwsc
           if-no-files-found: error
 
-      - name: Attest the package (tags only)
-        if: github.ref_type == 'tag'
+      - name: Attest the package 
+        if: steps.v.outputs.tag != ''
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: build/cultbox.fwsc
 
-      - name: Release (tags only)
-        if: github.ref_type == 'tag'
+      - name: Release 
+        if: steps.v.outputs.tag != ''
         uses: softprops/action-gh-release@v2
         with:
           files: |
             build/cultbox.fwsc
             build/SHA256SUMS
-          body_path: release-notes/${{ github.ref_name }}.md
+          tag_name: ${{ steps.v.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: CULTBOX ${{ steps.v.outputs.tag }}
+          body_path: release-notes/${{ steps.v.outputs.tag }}.md
           prerelease: false
+          make_latest: true
