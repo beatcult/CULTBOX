@@ -52,6 +52,7 @@ jobs:
           done
       - name: Flash chips, update loader and installer tests
         run: |
+          export AC79_SDK="$HOME/fw-AC79_AIoT_SDK"
           mkdir -p build/host
           cc -O1 -Wall -Wno-unused-function -DBOARD_SMK37=1 -Ifirmware/hal -o build/host/smk_flash_test tests/smk_flash_test.c
           build/host/smk_flash_test | tail -2
