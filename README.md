@@ -2,7 +2,7 @@
 
 # CULTBOX
 
-**A three-channel filthbox for the M-VAVE FM-1.** Drums, a Polivoks-style synth and a dub siren, each with its own
+**A three-channel filth machine for the M-VAVE FM-1.** Drums, a Polivoks-style synth and a dub siren, each with its own
 sequencer, effects and place in the mix. It runs on the FM-1 by itself: no computer needed once it is installed.
 
 <p align="center">
