@@ -1,0 +1,17 @@
+# One-off: remove the first release (v1.0, identity FM-1_666666, refused by M-UPGRADE) and its tag. Deleted again by the next commit.
+name: cleanup-once
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/cleanup-once.yml']
+jobs:
+  tidy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          gh release delete v1.0 --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release list --repo "$GITHUB_REPOSITORY"
