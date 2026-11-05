@@ -1,0 +1,19 @@
+# the pan page (MIX, third page): drums hard left, PLVKS hard right, DUB a little left; the shared echo returned and panned hard left; then play PLVKS
+100 shot
+200 enc 0 1
+250 enc 5 40
+300 enc 5 40
+350 enc 5 40
+400 enc 0 1
+450 enc 2 -30
+500 enc 2 -30
+550 enc 3 30
+600 enc 3 30
+650 enc 3 30
+700 enc 4 -3
+900 enc 5 -30
+950 enc 5 -30
+1000 shot
+1500 keys 0x80
+2500 keys 0
+6500 end

@@ -71,7 +71,8 @@ static uint32_t fm1_ticks(void) { return 0; }   /* (no counter on the computer: 
 #define CH_P (FXS_P + 4u)                                      /* 115..138: each channel's effects (drums, PLVKS, DUBMARINE), 8 apiece: vintage, saturation model, drive, mix; tape drive, wow, age, mix (fxchain.h) */
 #define AR_P (CH_P + FXC_CHANNELS * FXC_PARAMS)                /* 139..147: the arpeggiator (on, mode, rate, octaves, gate) and the scale (root, scale, quantize keys, quantize the pattern) */
 #define SUB_P (AR_P + 9u)                                       /* 148..151: the kick's sub (drums): level, tune, decay, drop */
-#define NPARAM (SUB_P + 4u)
+#define PAN_P (SUB_P + 4u)                                     /* 152..155: the pan of drums, PLVKS, DUBMARINE (with its echo) and the shared echo's return */
+#define NPARAM (PAN_P + 4u)
 #define MAXPAGE 14
 
 /* ---- the sound (audio ISR): events from the main loop, one writer each side */
@@ -110,7 +111,7 @@ static trk_t trk[2];
 static arp_t arp;                               /* the PLVKS keys' arpeggiator (ISR) */
 static volatile uint8_t rec_on, rec_h, rec_t;   /* REC armed; the notes it heard, for the main loop to write into the pattern */
 static struct { uint8_t step, note, vel; } recq[16];
-static volatile uint8_t mixv[7];
+static volatile uint8_t mixv[11];
 static uint8_t fxsync[4] = {0, 5, 0, 5};         /* the echoes' sync and note value (ISR's copy of FXS_P) */                /* MIX_P: volumes of drums, PLVKS, DUBMARINE; master; echo sends */
 static void rec_hook(unsigned note, unsigned vel)   /* a PLVKS note was played: if REC is armed and the track runs, it belongs on the step nearest now */
 {
@@ -158,6 +159,7 @@ static void apply(unsigned p, unsigned v)       /* ISR side */
         fxc_set(c, k, v);
         if (k == FXC_VINT) { if (c == 0u) drums_vintage((drums_bank_t *)drums_store, v); else if (c == 1u) polivoks_bank_vintage((polivoks_bank_t *)bank_store, v); else dubsiren_vintage((dubsiren_bank_t *)siren_store, v); }
     }
+    else if (p >= PAN_P) mixv[7u + p - PAN_P] = (uint8_t)v;
     else if (p >= SUB_P) drums_set((drums_bank_t *)drums_store, DRUMS_SUBLEVEL + (p - SUB_P), v);
     else {                                                       /* the arpeggiator and the scale */
         static uint8_t sc[4];                                    /* root, scale, (keys: the main loop's), pattern */
@@ -168,16 +170,36 @@ static void apply(unsigned p, unsigned v)       /* ISR side */
 }
 
 static uint32_t gain_of(uint32_t v) { return v * v / 127u; }        /* a volume knob: a gentle curve, 0..127 */
-static void mix_in(uint32_t c, uint32_t g, uint32_t gs, int32_t *bus)   /* tmp into the dry bus and an echo's send bus, g and gs 0..127 */
+static int32_t el[POLIVOKS_FRAMES], er[POLIVOKS_FRAMES];        /* a panned echo's return, before it is placed */
+static void pan_gains(uint32_t p, uint32_t *gl, uint32_t *gr)   /* balance law: 64 is the centre (both sides full), 0 all left, 127 all right */
 {
-    uint32_t i, pk = 0;
+    *gl = p <= 64u ? 128u : (127u - p) * 128u / 63u;
+    *gr = p >= 64u ? 128u : p * 2u;
+}
+static void echo_in(uint32_t p, const int32_t *l, const int32_t *r)   /* an echo's stereo return into the mix: as it is at the centre, summed to mono as it is panned away */
+{
+    uint32_t i, gl, gr, d = p > 64u ? p - 64u : 64u - p, st = 128u - d * 2u;
+    int32_t s = (int32_t)st, m = (int32_t)(128u - st);
+    pan_gains(p, &gl, &gr);
+    for (i = 0; i < POLIVOKS_FRAMES; i++) {
+        int32_t mono = (l[i] + r[i]) >> 1, a = (l[i] * s + mono * m) >> 7, b = (r[i] * s + mono * m) >> 7;
+        left[i] += (a * (int32_t)gl) >> 7;
+        right[i] += (b * (int32_t)gr) >> 7;
+    }
+}
+static void mix_in(uint32_t c, uint32_t g, uint32_t gs, int32_t *bus, uint32_t pan)   /* tmp into the dry buses (placed by pan) and an echo's send bus, g and gs 0..127 */
+{
+    uint32_t i, pk = 0, gl, gr;
+    pan_gains(pan, &gl, &gr);
+    gl = g * gl >> 7; gr = g * gr >> 7;
     for (i = 0; i < POLIVOKS_FRAMES; i++) {
         int32_t x = tmp[i];
         uint32_t a;
         x = x > 16777215 ? 16777215 : x < -16777215 ? -16777215 : x;
         a = (uint32_t)(x < 0 ? -x : x);
         if (a > pk) pk = a;
-        left[i] += (x * (int32_t)g) >> 7;
+        left[i] += (x * (int32_t)gl) >> 7;
+        right[i] += (x * (int32_t)gr) >> 7;
         bus[i] += (x * (int32_t)gs) >> 7;
     }
     pk >>= 8;
@@ -213,18 +235,19 @@ static void app_audio(int32_t *out, uint32_t n)
     for (blk = 0; blk + POLIVOKS_FRAMES <= n; blk += POLIVOKS_FRAMES) {
         uint32_t gm = gain_of(mixv[3]), g, any;
         float spb = trk[0].q.sync && trk[0].q.est > 0.0f ? trk[0].q.est * 24.0f : 2646000.0f / (float)(trk[0].q.tempo + 40u);   /* samples a beat */
-        for (i = 0; i < POLIVOKS_FRAMES; i++) left[i] = snd[i] = snd2[i] = 0;
+        for (i = 0; i < POLIVOKS_FRAMES; i++) left[i] = right[i] = snd[i] = snd2[i] = 0;
         if (trk[0].q.run) seq_block(&trk[0].q, trk[0].buf[trk[0].live]);
         if (trk[1].q.run) seq_block(&trk[1].q, trk[1].buf[trk[1].live]);
         arp_block(&arp, spb);
         any = 0;
-        if (drums_render(drums, tmp)) { if (fxc_active(0u)) fxc_process(0u, tmp, POLIVOKS_FRAMES); g = gain_of(mixv[0]) * gm >> 7; mix_in(0, g, g * mixv[4] >> 7, snd); any = 1; for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0; }
-        if (polivoks_bank_render(bank, tmp)) { if (fxc_active(1u)) fxc_process(1u, tmp, POLIVOKS_FRAMES); g = gain_of(mixv[1]) * gm >> 7; mix_in(1, g, g * mixv[5] >> 7, snd); any = 1; for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0; }
-        if (dubsiren_render(siren, tmp)) { if (fxc_active(2u)) fxc_process(2u, tmp, POLIVOKS_FRAMES); g = gain_of(mixv[2]) * gm >> 7; mix_in(2, g, g * mixv[6] >> 7, snd2); any = 1; for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0; }   /* (DUBMARINE has its own echo) */
-        for (i = 0; i < POLIVOKS_FRAMES; i++) right[i] = left[i];
+        if (drums_render(drums, tmp)) { if (fxc_active(0u)) fxc_process(0u, tmp, POLIVOKS_FRAMES); g = gain_of(mixv[0]) * gm >> 7; mix_in(0, g, g * mixv[4] >> 7, snd, mixv[7]); any = 1; for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0; }
+        if (polivoks_bank_render(bank, tmp)) { if (fxc_active(1u)) fxc_process(1u, tmp, POLIVOKS_FRAMES); g = gain_of(mixv[1]) * gm >> 7; mix_in(1, g, g * mixv[5] >> 7, snd, mixv[8]); any = 1; for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0; }
+        if (dubsiren_render(siren, tmp)) { if (fxc_active(2u)) fxc_process(2u, tmp, POLIVOKS_FRAMES); g = gain_of(mixv[2]) * gm >> 7; mix_in(2, g, g * mixv[6] >> 7, snd2, mixv[9]); any = 1; for (i = 0; i < POLIVOKS_FRAMES; i++) tmp[i] = 0; }   /* (DUBMARINE has its own echo) */
         polivoks_fx_tempo(spb);
-        any |= polivoks_fx_process(0u, snd, left, right);
-        any |= polivoks_fx_process(1u, snd2, left, right);
+        if (mixv[10] == 64u) any |= polivoks_fx_process(0u, snd, left, right);            /* (the shared echo at the centre stays in stereo) */
+        else { for (i = 0; i < POLIVOKS_FRAMES; i++) el[i] = er[i] = 0; if (polivoks_fx_process(0u, snd, el, er)) { echo_in(mixv[10], el, er); any = 1; } }
+        if (mixv[9] == 64u) any |= polivoks_fx_process(1u, snd2, left, right);
+        else { for (i = 0; i < POLIVOKS_FRAMES; i++) el[i] = er[i] = 0; if (polivoks_fx_process(1u, snd2, el, er)) { echo_in(mixv[9], el, er); any = 1; } }   /* (DUBMARINE's echo goes where DUBMARINE is) */
         if (!any) continue;                                        /* silence in, silence out: nothing to add */
         for (i = 0; i < POLIVOKS_FRAMES; i++) {   /* Q23 -> Q15, held short of the rails */
             int32_t l = left[i] >> 8, r = right[i] >> 8;
@@ -274,6 +297,7 @@ static const fm1_param_t CHP[FXC_PARAMS] = {{"Vintage", 127, 0, 0}, {"Model", 4,
 static const char *const ENGINE_NAMES[] = {"PLVKS", "DUBMARINE", "DRUMS"};
 static const fm1_param_t MIXP[7] = {{"Drums", 127, 110, 0}, {"PLVKS", 127, 110, 0}, {"Dub", 127, 110, 0}, {"Master", 127, 127, 0},
                                     {"Send 1", 127, 127, 0}, {"Send 2", 127, 127, 0}, {"Send 3", 127, 127, 0}};
+static const fm1_param_t PANP[4] = {{"Drums", 127, 64, 0}, {"PLVKS", 127, 64, 0}, {"Dub", 127, 64, 0}, {"Echo", 127, 64, 0}};
 static const fm1_param_t ENGP = {"Engine", 2, 0, ENGINE_NAMES};
 static const char *const CHOKE_NAMES[] = {"Off", "On"};
 static const fm1_param_t PADP[DRUM_PADPARAMS] = {{"Tune", 127, 64, 0}, {"Decay", 127, 127, 0}, {"Level", 127, 100, 0}};
@@ -286,7 +310,7 @@ static const fm1_param_t *param(unsigned p)
 {
     return p < NVOICEPARAM ? polivoks_param((int)p) : p < FX_P ? dubsiren_param((int)(p - SIREN_P))
          : p < ENGINE_P ? &FXP[p - FX_P] : p == ENGINE_P ? &ENGP : p < DSEL_P ? &PADP[(p - PADP_P) % DRUM_PADPARAMS]
-         : p == DSEL_P ? &dselp : p < SQ_P ? &DGLOBP[p - DLEV_P] : p < SQ2_P ? &SQP[p - SQ_P] : p < MIX_P ? &SQP[p - SQ2_P] : p < FX2_P ? &MIXP[p - MIX_P] : p < FXS_P ? &FXP[p - FX2_P] : p < CH_P ? &FXSP[p - FXS_P] : p < AR_P ? &CHP[(p - CH_P) % FXC_PARAMS] : p < SUB_P ? &ARPP[p - AR_P] : &SUBP[p - SUB_P];
+         : p == DSEL_P ? &dselp : p < SQ_P ? &DGLOBP[p - DLEV_P] : p < SQ2_P ? &SQP[p - SQ_P] : p < MIX_P ? &SQP[p - SQ2_P] : p < FX2_P ? &MIXP[p - MIX_P] : p < FXS_P ? &FXP[p - FX2_P] : p < CH_P ? &FXSP[p - FXS_P] : p < AR_P ? &CHP[(p - CH_P) % FXC_PARAMS] : p < SUB_P ? &ARPP[p - AR_P] : p < PAN_P ? &SUBP[p - SUB_P] : &PANP[p - PAN_P];
 }
 /* pages: the first parameter of each (four to a page), per engine */
 static const uint8_t PV_PAGE[14] = {0, 4, 8, 12, 16, 20, 24, 28, AR_P + 1, AR_P + 5, FX_P, FXS_P, CH_P + FXC_PARAMS, CH_P + FXC_PARAMS + 4};
@@ -301,12 +325,12 @@ static uint8_t seqmode, seqview, mixview = 1;   /* mixview: the mix page (the AL
 static uint32_t mixpg;
                 /* SEQ mode (DRUMS only) and the page of 16 steps on show */
 static uint32_t seqpg;                           /* the knob page in SEQ mode */
-static uint32_t npage(void) { return mixview ? 2u : seqmode ? 2u : engine_val() == 2u ? 7u : engine_val() ? 7u : 14u; }
+static uint32_t npage(void) { return mixview ? 3u : seqmode ? 2u : engine_val() == 2u ? 7u : engine_val() ? 7u : 14u; }
 static uint32_t page_base(uint32_t page) { return engine_val() ? SI_PAGE[page] : PV_PAGE[page]; }
 static const char *page_title(uint32_t page) { return seqmode ? SQ_TITLE[page] : engine_val() == 2u ? DR_TITLE[page] : engine_val() ? SI_TITLE[page] : PV_TITLE[page]; }
 static uint32_t page_param(uint32_t page, uint32_t k)       /* the k-th parameter on the page (the PAD page edits the selected pad) */
 {
-    if (mixview) return page == 0 ? MIX_P + k : (k < 3u ? MIX_P + 4u + k : FX_P + 3u);
+    if (mixview) return page == 0 ? MIX_P + k : page == 2 ? PAN_P + k : (k < 3u ? MIX_P + 4u + k : FX_P + 3u);
     if (seqmode) return sqi(page * 4u + k);
     if (engine_val() == 2u) return page == 0 ? (k == 0 ? DSEL_P : PADP_P + val[DSEL_P] * DRUM_PADPARAMS + k - 1u) : page == 1 ? DLEV_P + k : page == 2 ? SUB_P + k : page == 3 ? FX_P + k : page == 4 ? FXS_P + k : CH_P + (page - 5u) * 4u + k;
     return page_base(page) + k;
@@ -722,6 +746,10 @@ static void put_unit(char *s, const char *u)
 static void format_param(unsigned p, char *s)     /* the siren's values in their own units (as dubmarine shows them) */
 {
     uint32_t v = val[p], x;
+    if (p >= PAN_P) {                                           /* L100 .. C .. R100 */
+        if (v == 64u) { s[0] = 'C'; s[1] = 0; return; }
+        s[0] = v < 64u ? 'L' : 'R'; put_num(s + 1, (v < 64u ? 64u - v : v - 64u) * 100u / (v < 64u ? 64u : 63u)); return;
+    }
     if (p >= SQ_P) {
         switch (p - SQ_P) {
         case SEQ_TEMPO: put_num(s, 40u + v); return;
@@ -1214,7 +1242,7 @@ static void splash(void)                        /* the boot screen: the CULTBOX 
 static uint32_t mix_sig = ~0u, mix_t, mix_pk[3], home_t, home_used = 1;
 static void mix_ui(void)
 {
-    static const char *const NM[4] = {"DRUMS", "PLVKS", "DUB", "MASTER"}, *const NM2[4] = {"DRUMS", "PLVKS", "DUB", "ECHO"}, *const CH[4] = {"CH 1", "CH 2", "CH 3", "MIX"};
+    static const char *const NM[4] = {"DRUMS", "PLVKS", "DUB", "MASTER"}, *const NM2[4] = {"DRUMS", "PLVKS", "DUB", "ECHO"}, *const CH[4] = {"CH 1", "CH 2", "CH 3", "MIX"}, *const CHP3[4] = {"CH 1", "CH 2", "CH 3", "DELAY"};
     static const uint16_t COL[4] = {RGB(255, 150, 60), RGB(255, 190, 90), RGB(60, 215, 100), RGB(230, 230, 220)};
     uint32_t c, sig, v[4], w[4], pg = mixpg, sel = chan_of(engine_val()), full = mix_sig == ~0u, i;
     if (!full && fm1_ms - mix_t < 40u) return;
@@ -1223,11 +1251,11 @@ static void mix_ui(void)
         uint32_t pk = tpeak[c];
         tpeak[c] = 0;
         mix_pk[c] = pk > mix_pk[c] ? pk : mix_pk[c] - mix_pk[c] / 5u;
-        v[c] = val[pg ? MIX_P + 4u + c : MIX_P + c];
+        v[c] = val[pg == 2u ? PAN_P + c : pg ? MIX_P + 4u + c : MIX_P + c];
         w[c] = mix_pk[c] >= 16384u ? 48u : mix_pk[c] * 48u / 16384u;
     }
-    v[3] = pg ? val[FX_P + 3u] : val[MIX_P + 3u]; w[3] = 0;
-    sig = (pg << 1 | (fm1_ms < msg_until ? 1u : 0u) | msg_n << 2 | sel << 8) & 0xFFFFu;
+    v[3] = pg == 2u ? val[PAN_P + 3u] : pg ? val[FX_P + 3u] : val[MIX_P + 3u]; w[3] = 0;
+    sig = (pg << 14 | (fm1_ms < msg_until ? 1u : 0u) | msg_n << 2 | sel << 8) & 0xFFFFu;
     for (c = 0; c < 4u; c++) sig = sig * 131u + v[c] * 7u + w[c];
     sig &= 0x7FFFFFFFu;
     if (!full && sig == mix_sig) return;
@@ -1237,7 +1265,7 @@ static void mix_ui(void)
     }
     if (full || (sig & 0xFFFFu) != (mix_sig & 0xFFFFu) || 1) {
         char t[40];
-        const char *src = fm1_ms < msg_until ? msg : pg ? "ECHO SENDS" : "LEVELS";
+        const char *src = fm1_ms < msg_until ? msg : pg == 2u ? "PAN" : pg ? "ECHO SENDS" : "LEVELS";
         for (i = 0; src[i] && i < 39u; i++) t[i] = src[i];
         t[i] = 0;
         draw_text_box(0, 124, 240, &FONT_S, t, fm1_ms < msg_until ? C_ACC : C_CREAM_DIM, 1);
@@ -1249,12 +1277,16 @@ static void mix_ui(void)
         uint32_t on = c < 3u && c == sel;
         cv_rect(x, 0, 56, 56, on ? C_WHITE : ui_mix(col, C_BLACK, 8));
         cv_rect(x + (on ? 2 : 1), on ? 2 : 1, on ? 52 : 54, on ? 52 : 54, C_BLACK);
-        tw = text_w(&FONT_S, CH[c]);
-        cv_text(x + (56 - tw) / 2, 4, &FONT_S, CH[c], col);
+        tw = text_w(&FONT_S, pg == 2u ? CHP3[c] : CH[c]);
+        cv_text(x + (56 - tw) / 2, 4, &FONT_S, pg == 2u ? CHP3[c] : CH[c], col);
         tw = text_w(&FONT_S, pg ? NM2[c] : NM[c]);
         cv_text(x + (56 - tw) / 2, 20, &FONT_S, pg ? NM2[c] : NM[c], ui_mix(col, C_BLACK, 11));
         cv_rect(x + 4, 38, 48, 8, ui_mix(col, C_BLACK, 4));
-        cv_rect(x + 4, 38, (int32_t)(v[c] * 48u / 127u), 8, col);
+        if (pg == 2u) {                                       /* a pan: the bar grows from the centre */
+            int32_t px = x + 4 + (int32_t)(v[c] * 48u / 127u), mid = x + 28;
+            if (px < mid) cv_rect(px, 38, mid - px, 8, col); else cv_rect(mid, 38, px - mid + 1, 8, col);
+            cv_rect(mid, 35, 1, 14, C_WHITE);
+        } else cv_rect(x + 4, 38, (int32_t)(v[c] * 48u / 127u), 8, col);
         if (c < 3u && !pg) cv_rect(x + 4, 48, (int32_t)w[c], 3, C_WHITE);
     }
     cv_blit(0, 144);
@@ -1294,9 +1326,13 @@ static void app_main(void)
     load_banks();
     p = (uint32_t)settings_load(&set, sizeof set);
     if (p) {                                    /* the settings of the builds before the mixer (5 + 92 bytes) and before the sequencer (5 + 84): carry them over */
-        uint8_t od[5u + FX2_P], ob[5u + SQ2_P], oc[5u + SQ_P], oe[5u + CH_P], of[5u + AR_P], og[5u + SUB_P];
+        uint8_t oh[5u + PAN_P], od[5u + FX2_P], ob[5u + SQ2_P], oc[5u + SQ_P], oe[5u + CH_P], of[5u + AR_P], og[5u + SUB_P];
         uint32_t mig = 0;                                       /* carried over from an older layout: the second echo starts at its defaults */
-        if (!settings_load(og, sizeof og)) {                     /* the build before the kick's sub: it starts off */
+        if (!settings_load(oh, sizeof oh)) {                     /* the build before the pan page: all centred */
+            for (k = 0; k < sizeof oh; k++) ((uint8_t *)&set)[k] = oh[k];
+            for (k = PAN_P; k < NPARAM; k++) set.p[k] = param(k)->def;
+            p = 0;
+        } else if (!settings_load(og, sizeof og)) {                     /* the build before the kick's sub: it starts off */
             for (k = 0; k < sizeof og; k++) ((uint8_t *)&set)[k] = og[k];
             for (k = SUB_P; k < NPARAM; k++) set.p[k] = param(k)->def;
             p = 0;
@@ -1491,6 +1527,7 @@ static void app_main(void)
                 knob_t[k] = fm1_ms;
                 v = (int32_t)val[q] + step;
                 v = v < 0 ? 0 : v > (int32_t)mx ? (int32_t)mx : v;
+                if (q >= PAN_P && ((int32_t)val[q] - 64) * (v - 64) < 0) v = 64;       /* a pan stops at the centre */
                 if ((uint32_t)v != val[q]) {
                     if (q == sqi(SEQ_PATTERN)) { if (TK.dirty) pattern_store(tsel(), val[q]); set_param(q, (unsigned)v); pattern_load(tsel(), (uint32_t)v); { const char *pn = pat_name(tsel(), (uint32_t)v); unsigned bp = pat_bpm(tsel(), (uint32_t)v); if (bp) set_param(sqi(SEQ_TEMPO), bp - 40u); if (pn) say(pn, 1200); } }
                     else set_param(q, (unsigned)v);
