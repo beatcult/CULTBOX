@@ -1,0 +1,21 @@
+# One-off tidy-up after the rename: remove the old rolling pre-releases and their tags, and the merged branch.
+# Runs once when this file lands on main; the next commit deletes it.
+name: cleanup-once
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/cleanup-once.yml']
+jobs:
+  tidy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          for t in cultbox-latest polivoks-latest; do
+            gh release delete "$t" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          done
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/polivoks-duophonic" || true
+          gh release list --repo "$GITHUB_REPOSITORY"
