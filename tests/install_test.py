@@ -6,7 +6,7 @@ The fake device is the one in web/test_web.mjs: identity on the handshake,
 then "device asks, host answers" reads of the logical image. Run from the repo root:
   python3 tests/install_test.py
 Also checks logical_image/product_of against web/fm1pkg.js (needs node, web/ and
-build/cultbox.fwsc, skipped otherwise: Dinghy has no web installer of its own; from genkigenki/sloop-fm1 smk37), the SMK-37 Pro identities, and the 20 / 36 block
+build/cultbox.fwsc, skipped otherwise: CULTBOX has no web installer of its own; from genkigenki/sloop-fm1 smk37), the SMK-37 Pro identities, and the 20 / 36 block
 deinterleave against the stock SMK-37 Pro packages (a directory named by SMK_STOCK_DIR, skipped when unset)."""
 import io
 import queue
@@ -169,7 +169,7 @@ def package(product="FM-1_900", marker=True, size=0x2000, damage=False, blocks=2
     return bytes(raw)
 
 
-TMP = Path(tempfile.mkdtemp(prefix="dinghy-install-"))
+TMP = Path(tempfile.mkdtemp(prefix="cultbox-install-"))
 
 
 def pkgfile(name, raw):
@@ -377,7 +377,7 @@ def against_js():
         if f.exists():
             ok(I.LOADER_MARK in f.read_bytes(), f"{f.name} carries the Felucca loader marker")
     if not shutil.which("node") or not clean.exists() or not (ROOT / "web/fm1pkg.js").exists():
-        print("logical image vs fm1pkg.js: skipped (needs node, web/fm1pkg.js and build/cultbox.fwsc; Dinghy has no web/)")
+        print("logical image vs fm1pkg.js: skipped (needs node, web/fm1pkg.js and build/cultbox.fwsc; CULTBOX has no web/)")
         return
     js = ("import { logicalImage, productOf } from %r; import { readFileSync } from 'node:fs';"
           "const p = readFileSync(process.argv[1]); process.stderr.write(productOf(p));"

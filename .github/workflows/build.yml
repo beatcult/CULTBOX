@@ -1,0 +1,69 @@
+# CULTBOX: build the FM-1 package, run the host and unit tests on every push and pull request. Nothing is published here:
+# releases come from a tag (release.yml). The package is kept as a build artifact. Diagnostics are also annotations.
+name: build
+
+on:
+  push:
+    branches: [main, polivoks-duophonic]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: python3 -m pip install Pillow
+      - name: JieLi toolchain
+        run: sh tools/get_toolchain.sh
+      - name: JieLi AC79 SDK
+        run: |
+          for i in 1 2 3; do
+            git clone --depth 1 --branch AC79NN_SDK_V1.2.1_2023-12-13 \
+                https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK.git ~/fw-AC79_AIoT_SDK && break
+            rm -rf ~/fw-AC79_AIoT_SDK
+            sleep 20
+          done
+          test -d ~/fw-AC79_AIoT_SDK
+      - name: Build the FM-1 firmware
+        run: |
+          set +e
+          sh build.sh > build.log 2>&1
+          rc=$?
+          msg=$(tail -n 40 build.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          if [ $rc -ne 0 ]; then echo "::error title=build failed::$msg"; exit 1; fi
+          echo "::notice title=build::$msg"
+      - name: Floating point check (helper calls in the disassembly)
+        run: |
+          calls=$(grep -oE "call [^ ]*__[a-z0-9_]+" build/cultbox.dis | sort | uniq -c | sort -rn | head -8 | tr '\n' ';')
+          echo "::notice title=helper calls::${calls:-none}"
+      - name: Host run (screens and sound)
+        run: |
+          sh tests/run_host.sh tests/polivoks.txt | tail -5
+          sh tests/run_host.sh tests/pan.txt | tail -2
+      - name: Engine unit tests
+        run: |
+          for t in drum seq fxc arp; do
+            gcc -O2 -Wall -o build/${t}_test tests/${t}_test.c -lm
+            build/${t}_test | tail -3
+          done
+      - name: Flash chips, update loader and installer tests
+        run: |
+          mkdir -p build/host
+          cc -O1 -Wall -Wno-unused-function -DBOARD_SMK37=1 -Ifirmware/hal -o build/host/smk_flash_test tests/smk_flash_test.c
+          build/host/smk_flash_test | tail -2
+          cc -O1 -Wall -Wno-unused-function -o build/host/ota_test tests/ota_test.c
+          build/host/ota_test build/cultbox.fwsc | tail -2
+          head -c 60000 build/cultbox.bin > build/host/old_app.bin
+          python3 tools/fm1pkg_make.py build/host/old_app.bin build/loader/ota.bin build/host/old.fwsc > /dev/null
+          cc -O1 -Wall -Wno-unused-function -o build/host/ldr_test tests/ldr_test.c
+          build/host/ldr_test build/host/old.fwsc build/cultbox.fwsc | tail -2
+          python3 tests/install_test.py | tail -3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cultbox
+          path: build/cultbox.fwsc
+          if-no-files-found: error

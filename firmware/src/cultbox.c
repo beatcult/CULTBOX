@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* CULTBOX for the M-VAVE FM-1: three engines, PLVKS (a duophonic Formanta Polivoks-style voice), DUBMARINE (a dub siren) and DRUMS (sampled drums),
- * sharing a BBD echo, on the Dinghy platform (platform.c: updates, USB rescue, USB-MIDI, keys, knobs, screen, flash).
+ * sharing a BBD echo, on the Dinghy platform (zvenson) (platform.c: updates, USB rescue, USB-MIDI, keys, knobs, screen, flash).
  *
  *   keys       play the voice (two notes at once: the newest two held notes sound)
  *   SELECT     the page (nine: filter, oscillator 1, oscillator 2, amp envelope, filter envelope, LFO, mod and drive, play, BBD echo)
@@ -40,7 +40,7 @@ static void app_idle(void);
 #include "platform.c"
 #include "ui_gfx.c"
 #include "logo.h"
-#ifdef DINGHY_HOST
+#ifdef CULTBOX_HOST
 #define FM1_TICKS_PER_US 24u
 static uint32_t fm1_ticks(void) { return 0; }   /* (no counter on the computer: the meter reads 0) */
 #endif
@@ -1231,7 +1231,7 @@ static void splash(void)                        /* the boot screen: the CULTBOX 
     draw_text_box(0, 200, 240, &FONT_S, "PLVKS  DUBMARINE  DRUMS", C_CREAM_DIM, 1);
     lcd_sync();
     t0 = fm1_ms;
-    #ifdef DINGHY_HOST
+    #ifdef CULTBOX_HOST
     (void)t0; (void)i;                          /* (the computer shows it for no time: the test scripts keep their clock) */
 #else
     for (i = 0; i < 4000u && fm1_ms - t0 < 1800u; i++) platform_poll();
@@ -1366,7 +1366,7 @@ static void app_main(void)
     }
     cur = set.preset;
     self = selftest();
-#ifdef DINGHY_HOST
+#ifdef CULTBOX_HOST
     printf("selftest %u\n", (unsigned)self);
 #endif
     polivoks_bank_init(bank);                   /* before the audio interrupt may touch them */

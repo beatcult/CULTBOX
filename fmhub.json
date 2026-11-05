@@ -1,0 +1,8 @@
+{
+  "what": "A three-channel groovebox: a Polivoks-style duophonic synth (PLVKS), an Elka-style sample drum machine with a step sequencer, and a dub siren, with BBD echoes, per-channel character effects, arp, scales and a mixer with panning.",
+  "author": "beatcult",
+  "kinds": "groove",
+  "image": "fmhub-image.png",
+  "cheat": "https://cult-box.netlify.app/",
+  "color": "#FF963C"
+}

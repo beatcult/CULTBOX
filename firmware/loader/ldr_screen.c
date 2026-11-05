@@ -11,10 +11,10 @@
  * polled: the panel's ~0.3 s init would leave the host's enumeration unanswered). FM-1 only (the SMK-37's stays dark).
  * LDR_NAME / LDR_COLOUR: the firmware's name (at most 9 letters at size 4, more get smaller) and colour (RGB565). */
 #ifndef LDR_NAME
-#define LDR_NAME "DINGHY"                  /* (tools/build.py: LOADER_NAME) */
+#define LDR_NAME "CULTBOX"                  /* (tools/build.py: LOADER_NAME) */
 #endif
 #ifndef LDR_COLOUR
-#define LDR_COLOUR 0xB47Fu               /* Dinghy's lilac, #B48CFF (tools/build.py: LOADER_COLOUR) */
+#define LDR_COLOUR 0xB47Fu               /* the lilac, #B48CFF (tools/build.py: LOADER_COLOUR) */
 #endif
 #define LDR_BG 0x1082u                   /* the hub's background, #151213 */
 #define LDR_INK 0xEF5Cu                  /* its text, #EFE8E1 */

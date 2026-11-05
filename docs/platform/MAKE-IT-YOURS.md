@@ -1,3 +1,5 @@
+> **Platform documentation, inherited from [Dinghy](https://github.com/zvenson/dinghy) by zvenson.** CULTBOX is built on Dinghy's platform; this page describes that base (its text still says "Dinghy" and keeps Dinghy's example identities). For CULTBOX itself see the [README](../../README.md).
+
 # Make it yours
 
 Dinghy is meant to be copied. This is how a copy becomes your firmware, gets released, and gets into the
@@ -22,7 +24,7 @@ works: `./build.sh` and `tests/run_host.sh` (see the [README](../README.md)).
 - The update loader's screen (FM-1) shows `SCREEN_NAME` in `SCREEN_COLOUR` (RGB565), both in `tools/build.py`.
 - Your data: a `STORE_MAGIC` of your own in `firmware/src/store.h`, so your firmware never reads another Dinghy fork's
   settings as its own; for the SMK-37 also `DATA_FAMILY` in `tools/build.py` (the store's owner tag, 1..7 of A-Z 0-9).
-- Make your own logo; `assets/logo.svg` is Dinghy's.
+- Make your own logo (Dinghy's signet is not included here).
 
 ## 3. Your package identity
 
@@ -39,7 +41,7 @@ hub use it to tell firmwares apart: two firmwares with the same identity look li
 ## 4. Release
 
 ```sh
-./build.sh --release 0.2        # -> build/cultbox-0.2.fwsc, identity FM-1_992, the version "0.2" on the screen
+./build.sh --release 0.2        # -> build/cultbox.fwsc, the version "0.2" on the screen
 ```
 
 On GitHub: a release with a tag (`v0.2`) and the `.fwsc` attached. Say what changed in its notes: the hub links

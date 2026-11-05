@@ -1,3 +1,5 @@
+> **Platform documentation, inherited from [Dinghy](https://github.com/zvenson/dinghy) by zvenson.** CULTBOX is built on Dinghy's platform; this page describes that base (its text still says "Dinghy" and keeps Dinghy's example identities). For CULTBOX itself see the [README](../../README.md).
+
 # Dinghy API
 
 Everything [platform.c](../firmware/src/platform.c) gives your app. One compilation unit: `dinghy.c` includes

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
-"""Build Dinghy (on Felucca / SLOOP's platform): the app, the update loader and an installable .fwsc package.
+"""Build CULTBOX (on the Dinghy / Felucca / SLOOP platform): the app, the update loader and an installable .fwsc package.
 
   tools/build.py [--release X.Y[-suffix]] [--board fm1|smk37] [--model pro|elite|mke]
 
-Outputs in build/: dinghy.bin (app), loader/ota.bin (update loader),
+Outputs in build/: cultbox.bin (app), loader/ota.bin (update loader),
 cultbox.fwsc (package). See README.md for the toolchain and the SDK.
 
 --board smk37 (or BOARD=smk37) builds for the M-Vave SMK-37 (docs/SMK37.md): -DBOARD_SMK37=1 for the app and the
@@ -55,13 +55,14 @@ SDK_SHA256 = {
 }
 
 BOARD = "fm1"                       # fm1 (default) or smk37: BOARD env or --board
-BOARD_PREFIX = {"fm1": "FM-1_99", "smk37": "SMK-37 Pro_99"}   # identity: prefix + minor (0: a dev build)
+BOARD_PREFIX = {"fm1": "FM-1_99", "smk37": "SMK-37 Pro_99"}   # SMK-37 identity (not released): prefix + minor (0: a dev build)
+FM1_IDENTITY = "FM-1_666666"        # CULTBOX's own package identity on the FM-1 (checked free on the Firmware Hub); every build and release
 BOARD_DEFS = {"fm1": [], "smk37": ["-DBOARD_SMK37=1"]}
 MODELS = {"pro": "SMK-37 Pro", "elite": "SMK-37 Elite", "mke": "MKE-P37"}   # smk37: one keyboard, three names
-DATA_FAMILY = "DINGHY"              # the SMK store's owner tag (store.h): 1..7 of A-Z 0-9. Your fork: your own
+DATA_FAMILY = "CULTBOX"              # the SMK store's owner tag (store.h): 1..7 of A-Z 0-9. Your fork: your own
 SCREEN_NAME = "CULTBOX"              # the update loader's screen (FM-1, ldr_screen.c): the name and its colour (RGB565)
 SCREEN_COLOUR = 0xEF18              # cream, #ECE2C4
-PRODUCT = "FM-1_990"                # Dinghy: 99N (OUR_LOADER in the installer wants FM-1_9NN). Your fork: pick your own
+PRODUCT = FM1_IDENTITY
 VERSION = None                      # APP_VER for release builds
 
 
@@ -176,9 +177,9 @@ def build_app():
     cmds = [("cc", "-c", FW / "crt0.S", "-o", OUT / "crt0.o"),
             ("cc", "-c", FW / "hal" / "fm1_vec.S", "-o", OUT / "fm1_vec.o"),
             ("cc", "-c", FW / "hal" / "fm1_isr.S", "-o", OUT / "fm1_isr.o"),
-            ("cc", *flags, "-c", FW / "src" / "dinghy.c", "-o", OUT / "dinghy.o")]
+            ("cc", *flags, "-c", FW / "src" / "cultbox.c", "-o", OUT / "cultbox.o")]
     tc_all(*cmds)
-    elf = OUT / "dinghy.elf"
+    elf = OUT / "cultbox.elf"
     ld = FW / "app.ld"
     if APP_SLOT != 0x8DFBC:          # another board's app slot (SMK-37): the same script, its XIP length
         txt = ld.read_text()
@@ -187,7 +188,7 @@ def build_app():
         ld = OUT / "app.ld"
         ld.write_text(txt.replace("LENGTH = 0x8DFBC", f"LENGTH = {APP_SLOT:#X}".replace("0X", "0x")))
     tc("pi32v2/bin/ld", "--gc-sections", "-e", "_start", "-T", ld, OUT / "crt0.o", OUT / "fm1_vec.o",
-       OUT / "fm1_isr.o", OUT / "dinghy.o", "-o", elf)
+       OUT / "fm1_isr.o", OUT / "cultbox.o", "-o", elf)
     for sect in ("text.bin", "data.bin", "ramtext.bin"):
         (OUT / sect).unlink(missing_ok=True)
     *_, syms, dis, rt = tc_all(("common/bin/objcopy", "-O", "binary", "-j", ".text", elf, OUT / "text.bin"),
@@ -196,7 +197,7 @@ def build_app():
                                ("common/bin/objdump", "-t", elf),
                                ("common/bin/objdump", "-d", elf),
                                ("common/bin/objdump", "-d", "-j", ".ram_text", elf))
-    (OUT / "dinghy.dis").write_text(dis)
+    (OUT / "cultbox.dis").write_text(dis)
 
     def symv(name):
         return int(re.search(r"^([0-9a-f]+) .*\s" + name + r"$", syms, re.M).group(1), 16)
@@ -213,7 +214,7 @@ def build_app():
             img += b"\xff" * (load - APP_XIP - len(img))
             img += blob
     img += b"\xff" * (-len(img) % 4)
-    (OUT / "dinghy.bin").write_bytes(img)
+    (OUT / "cultbox.bin").write_bytes(img)
     return bytes(img), syms, dis, rt
 
 
@@ -298,7 +299,7 @@ def mmio_check():
 def main():
     global PRODUCT, VERSION, BOARD, APP_SLOT
     ap = argparse.ArgumentParser()
-    ap.add_argument("--release", metavar="X.Y", help="release build: identity FM-1_99Y, version string X.Y")
+    ap.add_argument("--release", metavar="X.Y", help="release build: the version string X.Y on the screen and the package cultbox.fwsc (the FM-1 identity is always FM-1_666666)")
     ap.add_argument("--board", choices=sorted(BOARD_PREFIX), default=None,
                     help="target board: fm1 (default) or smk37 (default: $BOARD, else fm1)")
     ap.add_argument("--model", choices=sorted(MODELS), default=None,
@@ -318,15 +319,16 @@ def main():
         BOARD_DEFS[BOARD] = [*BOARD_DEFS[BOARD], f'-DSMK_MODEL="{MODELS[model]}"']
         BOARD_PREFIX[BOARD] = BOARD_PREFIX[BOARD].replace(MODELS["pro"], MODELS[model])
         suffix += "-" + model
-    PRODUCT = BOARD_PREFIX[BOARD] + "0"
+    PRODUCT = FM1_IDENTITY if BOARD == "fm1" else BOARD_PREFIX[BOARD] + "0"
     name = f"cultbox{suffix}.fwsc"
     if a.release:                   # one digit each: the identity has room for two (X.Y; a .Z only in the text)
         m = re.fullmatch(r"(\d)\.(\d)(\.\d)?(-[A-Za-z0-9]+)?", a.release)
         if not m:
             raise SystemExit(f"--release {a.release}: use X.Y, X.Y.Z or X.Y-suffix, one digit each")
-        PRODUCT = BOARD_PREFIX[BOARD] + m[2]
+        if BOARD != "fm1":
+            PRODUCT = BOARD_PREFIX[BOARD] + m[2]
         VERSION = m[1] + "." + m[2] + (m[3] or "")
-        name = f"cultbox-{a.release}{suffix}.fwsc"
+        name = f"cultbox{suffix}.fwsc" if BOARD == "fm1" else f"cultbox-{a.release}{suffix}.fwsc"   # (the FM-1 package keeps one name: .../releases/latest/download/cultbox.fwsc)
     fm1pkg_make.SDK = a.sdk
     for rel, sha in SDK_SHA256.items():          # fail early without the SDK
         if hashlib.sha256(fm1pkg_make.sdk_file(rel)).hexdigest() != sha:
@@ -347,7 +349,7 @@ def main():
         raise SystemExit("build: checks failed")
     pkg = fm1pkg_make.ufw(fm1pkg_make.flash_image(img, fm1pkg_make.KEY), ota, PRODUCT)
     (OUT / name).write_bytes(pkg)
-    print(f"app      {OUT / 'dinghy.bin'}  {len(img)} B")
+    print(f"app      {OUT / 'cultbox.bin'}  {len(img)} B")
     print(f"loader   {LDR / 'ota.bin'}  {len(ota)} B")
     print(f"package  {OUT / name}  {len(pkg)} B, identity {PRODUCT}" + (f", board {BOARD}" if BOARD != "fm1" else ""))
     return 0

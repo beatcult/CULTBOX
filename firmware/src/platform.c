@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* Dinghy's platform: everything an FM-1 (or SMK-37) firmware needs before it can be fun, taken unchanged from
+/* CULTBOX's platform (Dinghy's, by zvenson): everything an FM-1 (or SMK-37) firmware needs before it can be fun, taken unchanged from
  * SLOOP / Felucca / sloopDX / OberVave and wired up here. You should not need to touch this file.
  *
  *   boot + boot guard   a firmware that crashes at boot falls back to the USB rescue, then to the ROM
@@ -14,7 +14,7 @@
  *   storage             settings, NBLOB blobs of one sector, NSLOT slots of SLOT_SECT sectors, each with a CRC (store.h)
  *   crash screen        the PC of a fault, then a reboot
  *
- * The app (dinghy.c) includes this file first and supplies:
+ * The app (cultbox.c) includes this file first and supplies:
  *   static void app_audio(int32_t *out, uint32_t n)   audio ISR: n stereo frames, L R L R, Q15 (+-32767), out is zero
  *   static void app_main(void)                        never returns; calls platform_poll() often (every few ms)
  * and may define, before the #include:
@@ -44,7 +44,7 @@ enum { ENC_SELECT = 0, ENC_ALGORITHM = 1, ENC_KNOB1 = 2, ENC_KNOB2 = 3, ENC_KNOB
 #define KEY_LED(k) (14u + (k))
 #endif
 
-#ifdef DINGHY_HOST
+#ifdef CULTBOX_HOST
 #include "../../tests/host.c"                  /* on a computer: a fake FM-1 (tests/host.c) */
 #else
 #include <stdint.h>
@@ -78,13 +78,13 @@ static void fm1_led_key_glow(uint32_t id, int on)   /* as fm1_led_key, the dim l
 #include "bootguard.h"
 
 #ifndef APP_NAME
-#define APP_NAME "DINGHY"
+#define APP_NAME "CULTBOX"
 #endif
 #ifndef FELUCCA_ID
 #if BOARD_SMK37
 #define FELUCCA_ID SMK_MODEL "_990"             /* SMK-37 Pro_99N (Elite, MKE-P37: SMK_MODEL), tools/build.py */
 #else
-#define FELUCCA_ID "FM-1_990"                   /* package identity: 99N = Dinghy build N (tools/build.py) */
+#define FELUCCA_ID "FM-1_666666"                /* package identity (tools/build.py FM1_IDENTITY) */
 #endif
 #endif
 #ifndef APP_VER

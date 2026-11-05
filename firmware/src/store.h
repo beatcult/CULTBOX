@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* Where Dinghy keeps your data in flash, per board (platform.c: settings_*, blob_*, slot_*). Macros and compile-time
+/* Where CULTBOX keeps your data in flash, per board (platform.c: settings_*, blob_*, slot_*). Macros and compile-time
  * checks only, so the host tests include it (tests/smk_flash_test.c).
  *
  *              FM-1                          SMK-37 (Pro, Elite, MKE-P37)
@@ -30,7 +30,7 @@
 #define OWNER_AT 0x000AF000u                    /* (the kit's place for it) */
 #define SLOTS_AT 0x000C2000u
 #ifndef DATA_FAMILY
-#define DATA_FAMILY "DINGHY"                    /* the owner tag's family: 1..7 of A-Z 0-9 (tools/build.py DATA_FAMILY) */
+#define DATA_FAMILY "CULTBOX"                    /* the owner tag's family: 1..7 of A-Z 0-9 (tools/build.py DATA_FAMILY) */
 #endif
 #define FL_RANGE_OK(off, n) (FL_IN(off, n, FL_OTA_LO, FL_OTA_HI) || FL_IN(off, n, SETTINGS_AT, SETTINGS_AT + 0x1000u) || \
                              FL_IN(off, n, BLOBS_AT, BLOBS_AT + NBLOB * 0x1000u) || FL_IN(off, n, OWNER_AT, OWNER_AT + 0x1000u) || \

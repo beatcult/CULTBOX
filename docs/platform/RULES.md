@@ -1,3 +1,5 @@
+> **Platform documentation, inherited from [Dinghy](https://github.com/zvenson/dinghy) by zvenson.** CULTBOX is built on Dinghy's platform; this page describes that base (its text still says "Dinghy" and keeps Dinghy's example identities). For CULTBOX itself see the [README](../../README.md).
+
 # The chip's rules
 
 The FM-1 runs a JieLi AC791N with JieLi's own clang (pi32v2). It is fast enough for a lot of synth, but it

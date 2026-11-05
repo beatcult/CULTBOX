@@ -26,11 +26,11 @@
 /* ---- SMK-37 Pro flash map (see the fm1-to-smk37 guide) ----
  *   0x00000-0x03FFF  head (SPL, isd_config)         NEVER
  *   0x04000-0x9CFFF  app area (stock PRCT end)      update loader only (FL_APP)
- *   0x9D000-0xBAFFF  VM: the app's store (Dinghy: settings, blobs, owner tag)        FL_DATA
+ *   0x9D000-0xBAFFF  VM: the app's store (CULTBOX: settings, blobs, owner tag)        FL_DATA
  *   0xBB000-0xBFFFF  VM: M-UPGRADE loader staging + update record (ota.c)          FL_OTA
  *   0xC0000-0xC0FFF  BTIF (BT pairing)              NEVER
  *   0xC1000-0xC1FFF  USRTRIM (key/pad/wheel calibration, "trimdat")   NEVER
- *   0xC2000-0xE9FFF  USRFLASH: (SLOOP: user sample slots; Dinghy: the slots)       FL_SMP
+ *   0xC2000-0xE9FFF  USRFLASH: (SLOOP: user sample slots; CULTBOX: the slots)       FL_SMP
  *   0xEA000-0xF3FFF  free (USRFLASH tail + unlisted), unused
  *   0xF4000-0xFDFFF  USR (stock resources; kept for a rollback)   NEVER
  *   0xFE000-0xFEFFF  free, unused
@@ -69,7 +69,7 @@ _Static_assert(FL_REC_HI == FL_CAL_LO && FL_OTA_HI <= FL_REC_HI && FL_OTA_LO >= 
 _Static_assert(FL_DATA_HI <= FL_OTA_LO && FL_APP_HI <= FL_DATA_LO, "SMK: windows overlap");
 /* the update loader (loader.c): the app area, and records only in the VM below BTIF */
 #define FL_LDR_RANGE_OK(off, n) (FL_IN(off, n, FL_APP_LO, FL_APP_HI) || FL_IN(off, n, FL_REC_LO, FL_REC_HI))
-/* the app's own store: FL_DATA and the sample slots (Dinghy's platform.c gives a narrower FL_RANGE_OK) */
+/* the app's own store: FL_DATA and the sample slots (CULTBOX's platform.c gives a narrower FL_RANGE_OK) */
 #define FL_STORE_OK(off, n) (FL_IN(off, n, FL_DATA_LO, FL_DATA_HI) || FL_IN(off, n, FL_SMP_LO, FL_SMP_HI))
 #ifndef FL_RANGE_OK
 #define FL_RANGE_OK(off, n) (FL_STORE_OK(off, n) || FL_IN(off, n, FL_OTA_LO, FL_OTA_HI))
@@ -87,7 +87,7 @@ _Static_assert(FL_DATA_HI <= FL_OTA_LO && FL_APP_HI <= FL_DATA_LO, "SMK: windows
 #define FL_GLOB_HI      0x000FF000u
 #define FL_OTA_LO       0x000E0000u                /* M-UPGRADE loader staging, ota.c */
 #define FL_OTA_HI       0x000E5000u
-/* Felucca's own store (projects, user samples; settings); Dinghy's platform.c gives its own FL_RANGE_OK */
+/* Felucca's own store (projects, user samples; settings); CULTBOX's platform.c gives its own FL_RANGE_OK */
 #define FL_STORE_OK(off, n) (FL_IN(off, n, FL_DATA_LO, FL_DATA_HI) || FL_IN(off, n, FL_GLOB_LO, FL_GLOB_HI))
 /* Where the RAM driver may erase / program. The app build allows only its own
  * data regions; the update loader (firmware/loader) defines its own window. */

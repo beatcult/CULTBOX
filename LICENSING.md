@@ -1,6 +1,8 @@
 # Licensing
 
-Dinghy is free software under the GNU General Public License, version 3 only (`GPL-3.0-only`, full text in
+CULTBOX is a fork of [Dinghy](https://github.com/zvenson/dinghy) by zvenson, which carries the platform of [Felucca](https://github.com/hugelton/Felucca), [SLOOP](https://github.com/isod89/sloop-fm1), sloopDX and OberVave. Everything below that was in Dinghy keeps its authors and its licence.
+
+CULTBOX is free software under the GNU General Public License, version 3 only (`GPL-3.0-only`, full text in
 `LICENSE`). You may use, study, change and share it. If you give someone a firmware built from it, give them its
 complete source under the same licence too.
 
@@ -13,7 +15,8 @@ complete source under the same licence too.
 | The TRS MIDI IN `firmware/src/midi_uart.c` | Felucca's, as sloopDX carries it, with the ring read by content from Felucca [Salt] 0.9-salt14 by ChanceTheMaker (found by keremimo) |
 | The update loader's screen: `firmware/loader/ldr_screen.c`, `tests/ldr_screen_test.c` | Copyright (C) 2026 zvenson (from OberVave, the Firmware Hub's look); the idea, a loader that draws, its 5 x 7 letters and the order of things from [Skiff](https://github.com/illuminus5/skiff) by illuminus5, GPL-3.0 |
 | From OberVave: the storage (blobs, slots), `LCD_IDLE`, the SMK-37 wiring of `platform.c`, `store.h`, the pad event queue in `smk_input.h`, `tests/smk_flash_test.c`, `tests/run_tests.sh`, the CI workflow | Copyright (C) 2026 zvenson |
-| The app `firmware/src/dinghy.c`, the wiring `platform.c`, the host mode `tests/`, the docs | zvenson |
+| Dinghy's example app, its wiring `platform.c`, its host mode `tests/host.c` and `run_host.sh`, the platform docs in `docs/platform/` | Copyright (C) 2026 zvenson |
+| CULTBOX itself: `firmware/src/cultbox.c`, `polivoks.c/h`, `polivoks_fx.c/h`, `drums.c/h`, `drumseq.c/h`, `dubsiren.c/h`, `fxchain.c/h`, `arp.c/h`, `scale.h`, `presets.h`, `sirenfmt.h`, `ui_gfx.c`, `tools/make_drums.py`, the added `tests/`, the README | Copyright (C) 2026 beatcult |
 
 ## Third-party material
 
@@ -22,12 +25,12 @@ complete source under the same licence too.
 | Terminus font 8x16 (ter-u16n), rendered into `firmware/gen/felucca_font.h` | SIL OFL 1.1 | `assets/fonts/Terminus-LICENSE.txt` |
 | JieLi AC79 SDK: `uboot.boot`, `cfg_tool.bin`, `eq_cfg_hw.bin` are read from your SDK checkout at build time and placed in the package; no SDK files are in this tree | Apache-2.0 | <https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK> |
 
-## The logo
+## Samples and artwork
 
-`assets/logo.svg` / `logo.png` carry the designburg signet: Copyright (C) designburg, all rights reserved, not under
-the GPL. It marks Dinghy itself; a fork uses its own logo.
+- `assets/drums/elka/` and the generated `firmware/src/drums_data.h`: drum samples recorded from an Elka Drummer One, converted by `tools/make_drums.py`.
+- The BEAT CULT boot logo (`firmware/src/logo.h`, drawn by `ui_gfx.c`) is beatcult's artwork. Dinghy's own signet (designburg, all rights reserved) is not part of CULTBOX and has been removed.
 
 ## Trademarks
 
 "Felucca" and "Hügelton Instruments" are names of Hügelton Instruments; "M-VAVE", "FM-1", "SMK-37" and "MKE-P37"
-belong to their owners. Dinghy is not made or endorsed by them.
+belong to their owners. CULTBOX is not made or endorsed by them (nor by Dinghy's, Felucca's or SLOOP's authors).

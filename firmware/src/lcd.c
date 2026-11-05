@@ -25,7 +25,7 @@ static void lcd_sync(void)          /* finish the running transfer (before touch
         return;
 #ifdef LCD_IDLE
     while (!fm1_lcd_done())
-        LCD_IDLE();                /* the app's own work while the strip goes out (dinghy.c: MIDI in) */
+        LCD_IDLE();                /* the app's own work while the strip goes out (cultbox.c: MIDI in) */
 #endif
     fm1_lcd_wait();
     fm1_lcd_deselect();
