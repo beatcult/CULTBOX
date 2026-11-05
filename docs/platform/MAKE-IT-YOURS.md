@@ -33,6 +33,7 @@ hub use it to tell firmwares apart: two firmwares with the same identity look li
 
 - Dinghy is `FM-1_99N` (N = the minor version; on the SMK-37 `SMK-37 Pro_99N`, `SMK-37 Elite_99N`, `MKE-P37_99N`).
   **Pick your own** in `tools/build.py` (`BOARD_PREFIX` and `PRODUCT`).
+- Keep the identity to **three digits** (`FM-1_NNN`, like the official `FM-1_015`): M-VAVE's M-UPGRADE refused CULTBOX's first release, which had a six-digit one, with "Invalid OTA firmware: missing or incomplete model, version, or metadata".
 - Keep the form `FM-1_9` + two digits if you can: the web installers then also finish an install that was cut
   off halfway (they resume only the update loaders they know, `FM-1_9NN`).
 - Taken so far: `900` SLOOP, `91N` Felucca, `93N` sloopDX, `97N` zp12, `98N` (a Doom port), `99N` Dinghy, and others

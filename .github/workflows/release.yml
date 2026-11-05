@@ -1,5 +1,5 @@
 # CULTBOX: a release is made by adding release-notes/vX.Y.md to main (the notes are the release text, vX.Y the tag the
-# workflow creates): it builds the FM-1 package (cultbox.fwsc, identity FM-1_666666), attests it
+# workflow creates): it builds the FM-1 package (cultbox.fwsc, identity FM-1_666), attests it
 # (actions/attest-build-provenance) and publishes a live release with it.
 # The Firmware Hub takes the newest release that has a .fwsc attached, so nothing else publishes one.
 # The JieLi toolchain comes from pkgman.jieliapp.com (tools/get_toolchain.sh), the AC79 SDK from gitee.com, as in

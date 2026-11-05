@@ -29,7 +29,7 @@ The [user manual](https://cult-box.netlify.app/) (the CULTBOX dossier) is here.
 3. To leave CULTBOX, install any other firmware the same way (the update loader is part of the package). If CULTBOX
    ever crashes at boot, hold **OCT-** while switching on: USB rescue, no sound, only the updater.
 
-CULTBOX's package identity is **FM-1_666666**. It accepts both flash chips found in FM-1 units (Puya P25Q80 and the
+CULTBOX's package identity is **FM-1_666**. It accepts both flash chips found in FM-1 units (Puya P25Q80 and the
 UC25HQ80 fitted to newer ones), so settings and patterns are saved to flash on either.
 
 ## Build it yourself
