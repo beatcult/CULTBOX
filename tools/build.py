@@ -56,7 +56,7 @@ SDK_SHA256 = {
 
 BOARD = "fm1"                       # fm1 (default) or smk37: BOARD env or --board
 BOARD_PREFIX = {"fm1": "FM-1_99", "smk37": "SMK-37 Pro_99"}   # SMK-37 identity (not released): prefix + minor (0: a dev build)
-FM1_IDENTITY = "FM-1_666"        # CULTBOX's own package identity on the FM-1 (three digits like the official FM-1_015: M-VAVE's M-UPGRADE refused a six-digit one); every build and release
+FM1_IDENTITY = "FM-1_333"        # CULTBOX's own package identity on the FM-1 (three digits like the official FM-1_015: M-VAVE's M-UPGRADE refused a six-digit one; 666 is taken); every build and release
 BOARD_DEFS = {"fm1": [], "smk37": ["-DBOARD_SMK37=1"]}
 MODELS = {"pro": "SMK-37 Pro", "elite": "SMK-37 Elite", "mke": "MKE-P37"}   # smk37: one keyboard, three names
 DATA_FAMILY = "CULTBOX"              # the SMK store's owner tag (store.h): 1..7 of A-Z 0-9. Your fork: your own
@@ -299,7 +299,7 @@ def mmio_check():
 def main():
     global PRODUCT, VERSION, BOARD, APP_SLOT
     ap = argparse.ArgumentParser()
-    ap.add_argument("--release", metavar="X.Y", help="release build: the version string X.Y on the screen and the package cultbox.fwsc (the FM-1 identity is always FM-1_666)")
+    ap.add_argument("--release", metavar="X.Y", help="release build: the version string X.Y on the screen and the package cultbox.fwsc (the FM-1 identity is always FM-1_333)")
     ap.add_argument("--board", choices=sorted(BOARD_PREFIX), default=None,
                     help="target board: fm1 (default) or smk37 (default: $BOARD, else fm1)")
     ap.add_argument("--model", choices=sorted(MODELS), default=None,

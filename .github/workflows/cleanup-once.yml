@@ -1,0 +1,18 @@
+# One-off: remove the v1.1 release (identity FM-1_666, used by another firmware). Deleted again by the next commit.
+name: cleanup-once
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/cleanup-once.yml']
+jobs:
+  tidy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          sleep 240
+          gh release delete v1.1 --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release list --repo "$GITHUB_REPOSITORY"
