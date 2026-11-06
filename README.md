@@ -22,7 +22,7 @@ sequencer, effects and place in the mix. It runs on the FM-1 by itself: no compu
 The [user manual](https://cult-box.netlify.app/) (the CULTBOX dossier) is here.
 
 **Try it in your browser:** the real firmware, compiled to WebAssembly, with the FM-1's screen, dials, buttons and keys on a
-page (computer keyboard, touch or MIDI): [beatcult.github.io/cultbox](https://beatcult.github.io/CULTBOX/). Its source is
+page (computer keyboard, touch or MIDI): [beatcult.github.io/CULTBOX](https://beatcult.github.io/CULTBOX/). Its source is
 in [web/](web/); `web/build.sh` builds it with clang alone.
 
 ## Install
