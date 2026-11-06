@@ -63,8 +63,19 @@ jobs:
           cc -O1 -Wall -Wno-unused-function -o build/host/ldr_test tests/ldr_test.c
           build/host/ldr_test build/host/old.fwsc build/cultbox.fwsc | tail -2
           python3 tests/install_test.py | tail -3
+      - name: The browser build (WebAssembly) and its test
+        run: |
+          sudo apt-get install -y --no-install-recommends clang lld > /dev/null
+          sh web/build.sh
+          node tests/web_test.mjs
+          mkdir -p build/site && cp web/index.html web/app.js web/worklet.js build/web/cultbox.wasm build/site/
       - uses: actions/upload-artifact@v4
         with:
           name: cultbox
           path: build/cultbox.fwsc
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cultbox-web
+          path: build/site
           if-no-files-found: error

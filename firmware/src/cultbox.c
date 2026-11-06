@@ -1293,18 +1293,25 @@ static void mix_ui(void)
     mix_sig = sig;
 }
 
+#define APP_LOCALS \
+    const section_t *SECTION = SECTION_PV; \
+    uint32_t gsig = ~0u, hsig = ~0u, last_pos = 255u, play_mod = 0, pad_sig = 0, ui_reset_pads = 1, engine_drawn = 0, t_radar = 0, sw = 0, lamp_drawn = 0, pl_sig = ~0u, self, t_dsp = 0, dsp_drawn = ~0u, prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p; \
+    uint8_t held[27] = {0}, htg[27] = {0};      /* the keys down, and the engine each one plays (+ 1) */ \
+    uint8_t drawn[4]; \
+    uint32_t knob_t[4] = {0, 0, 0, 0}, home = 0, sf_was = 0, step_used = 0; \
+    int32_t sfdrawn[4] = {0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF}; \
+    uint8_t held_k = 255u; \
+    polivoks_bank_t *bank = (polivoks_bank_t *)bank_store; \
+    dubsiren_bank_t *siren = (dubsiren_bank_t *)siren_store;
+#ifdef CULTBOX_WEB
+APP_LOCALS                                      /* (in the browser the loop is a function the page calls: its variables live between the calls) */
+static void app_init(void)
+{
+#else
 static void app_main(void)
 {
-    const section_t *SECTION = SECTION_PV;
-    uint32_t gsig = ~0u, hsig = ~0u, last_pos = 255u, play_mod = 0, pad_sig = 0, ui_reset_pads = 1, engine_drawn = 0, t_radar = 0, sw = 0, lamp_drawn = 0, pl_sig = ~0u, self, t_dsp = 0, dsp_drawn = ~0u, prev = 0, k, t_change = 0, dirty = 0, page_drawn = ~0u, status_drawn = ~0u, p;
-    uint8_t held[27] = {0}, htg[27] = {0};      /* the keys down, and the engine each one plays (+ 1) */
-    uint8_t drawn[4];
-    uint32_t knob_t[4] = {0, 0, 0, 0}, home = 0, sf_was = 0, step_used = 0;
-    int32_t sfdrawn[4] = {0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF};
-    uint8_t held_k = 255u;
-    polivoks_bank_t *bank = (polivoks_bank_t *)bank_store;
-    dubsiren_bank_t *siren = (dubsiren_bank_t *)siren_store;
-
+    APP_LOCALS
+#endif
     if (blob_load(0, &ubank, sizeof ubank)) {
         uint32_t z, u;
         uint8_t *r = (uint8_t *)&ubank;
@@ -1396,7 +1403,14 @@ static void app_main(void)
             self_msg[n] = 0;
         }
     }
+#ifdef CULTBOX_WEB
+}
+static void app_step(void)                      /* one pass of the main loop (one millisecond) */
+{
+    do {
+#else
     for (;;) {
+#endif
         uint32_t keys, down, up, rel, b, st, page = mixview ? mixpg : seqmode ? seqpg : set.page;
         if (page >= npage()) { page = 0; if (mixview) mixpg = 0; else if (seqmode) seqpg = 0; else set.page = 0; }
         SECTION = sections();
@@ -1707,5 +1721,9 @@ static void app_main(void)
             dirty = 0;
             }
         }
+#ifdef CULTBOX_WEB
+    } while (0);
+#else
     }
+#endif
 }

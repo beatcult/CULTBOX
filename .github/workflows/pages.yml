@@ -1,0 +1,40 @@
+# CULTBOX in a browser: builds the firmware to WebAssembly (web/build.sh) and publishes web/ with it on GitHub Pages,
+# https://beatcult.github.io/cultbox/. Needs Settings > Pages > Source: "GitHub Actions" (once); until then this job
+# reports the reason and the run stays green.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths: ['web/**', 'firmware/src/**', 'tests/host.c', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y --no-install-recommends clang lld > /dev/null
+      - run: |
+          APP_VER=web sh web/build.sh
+          node tests/web_test.mjs
+          mkdir -p site && cp web/index.html web/app.js web/worklet.js build/web/cultbox.wasm site/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

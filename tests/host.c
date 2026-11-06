@@ -12,10 +12,16 @@
  *
  * Change SCRIPT below to try your own app. */
 #include <stdint.h>
+#ifdef CULTBOX_WEB                              /* in a browser (web/web.c): no libc */
+#define printf(...) ((void)0)
+void *memcpy(void *, const void *, unsigned long);
+void *memset(void *, int, unsigned long);
+#else
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef __linux__
+#endif
+#if defined(__linux__) && !defined(CULTBOX_WEB)
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
@@ -82,10 +88,12 @@ static void fm1_led_key_glow(uint32_t id, int on) { if (on) host_glow |= (uint64
 
 /* the screen: 240 x 240 RGB565, as the ST7789 gets it (gfx.c sends the bytes swapped) */
 static uint16_t fb[240 * 240];
+static uint32_t fb_ver;                         /* counts the changes (the browser page redraws when it moves) */
 static void lcd_sync(void) {}
 static void lcd_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t c)
 {
     uint32_t i, j;
+    fb_ver++;
     for (j = y; j < y + h && j < 240u; j++)
         for (i = x; i < x + w && i < 240u; i++)
             fb[j * 240u + i] = c;
@@ -93,6 +101,7 @@ static void lcd_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t c)
 static void lcd_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint16_t *px)
 {
     uint32_t i, j;
+    fb_ver++;
     for (j = 0; j < h; j++)
         for (i = 0; i < w; i++)
             if (x + i < 240u && y + j < 240u) {
@@ -114,9 +123,11 @@ static int host_load(uint8_t *a, uint32_t max, void *p, uint32_t n)   /* a[0] us
     memcpy(p, a + 4, n);
     return 0;
 }
+static uint32_t web_saves;                      /* what the browser page keeps: it looks for a change in this */
 static int host_save(uint8_t *a, uint32_t max, const void *p, uint32_t n, const char *what, uint32_t i)
 {
     if (n > max) return -1;
+    web_saves++;
     a[0] = 1; a[1] = (uint8_t)n; a[2] = (uint8_t)(n >> 8); a[3] = (uint8_t)(n >> 16);
     memcpy(a + 4, p, n);
     printf("%6u ms  %s %u saved (%u B)\n", fm1_ms, what, i, n);
@@ -142,6 +153,11 @@ static int midi_get(uint8_t *st, uint8_t *d1, uint8_t *d2)
 static void midi_send(uint32_t st, uint32_t d1, uint32_t d2) { printf("%6u ms  MIDI out %02X %u %u\n", fm1_ms, st, d1, d2); }
 
 static void app_audio(int32_t *out, uint32_t n);
+#ifdef CULTBOX_WEB
+static void app_init(void);
+static void app_step(void);
+#include "../web/web.c"
+#else
 static void app_main(void);
 
 /* the script: at t ms, keys down (bit k = key k, 0 = F3), a button edge, a MIDI message. A script file (the second
@@ -386,3 +402,4 @@ int main(int argc, char **argv)
     app_main();
     return 0;
 }
+#endif /* CULTBOX_WEB */
