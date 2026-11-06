@@ -16,6 +16,11 @@ CC="${CC:-cc} -O1 -Wall -Wno-unused-function"
 fail=0
 run() { echo "== $1"; shift; "$@" || fail=1; }
 
+# the plugin core (PLVKS and the echo at any sample rate): needs no build
+$CC -o "$OUT/core_rate_test" tests/core_rate_test.c -lm
+run "plugin core: PLVKS pitch and times, the echo's delay in ms at 44.1, 48, 88.2, 96 kHz; two echoes share nothing" "$OUT/core_rate_test"
+run "plugin core: at 44.1 kHz the voice and the echo render exactly as on origin/main" sh tests/core_check.sh origin/main
+
 [ -f build/cultbox.fwsc ] || { echo "run ./build.sh first"; exit 1; }
 
 run "FM-1 app on the host: the default script plays, screens and sound" sh tests/run_host.sh

@@ -12,6 +12,27 @@
 enum { FX_DLY_TIME, FX_DLY_FEED, FX_DLY_TONE, FX_DLY_MIX };
 extern const uint8_t polivoks_fx_default[POLIVOKS_FX_PARAMS];
 
+/* One echo with its own state, delay line and sample rate (a plugin makes as many as it has instances; the FM-1 keeps two, below). */
+typedef struct {
+    uint8_t pot[POLIVOKS_FX_PARAMS];
+    uint8_t sync, note;                 /* tempo sync: the delay is a note value of the beat */
+    float beat;                         /* samples (half rate) a beat lasts */
+    unsigned wr, n, mask;               /* write position; the delay line's length (a power of two) and its mask */
+    int16_t *buf;                       /* the delay line, n samples, the caller's */
+    float half, rate;                   /* the echo's sample rate (half the host's), and that over the FM-1's 22050 */
+    float len, len_target, fb, lp_a, lp1, lp2, hp_x, hp_y, mix;
+    float wow_phase, noise_slow, prev_l, prev_r;
+    uint32_t rng;
+    unsigned quiet;
+} polivoks_fx_t;
+unsigned polivoks_fx_buffer_len(float sample_rate);                       /* int16 samples a delay line needs at this host rate */
+void polivoks_fx_unit_init(polivoks_fx_t *f, int16_t *buf, unsigned n, float sample_rate, unsigned seed);   /* clears buf; seed varies the wobble */
+void polivoks_fx_unit_set(polivoks_fx_t *f, unsigned parameter, unsigned value);
+void polivoks_fx_unit_sync(polivoks_fx_t *f, unsigned on, unsigned note);
+void polivoks_fx_unit_tempo(polivoks_fx_t *f, float samples_per_beat);   /* the host's beat, in samples at the host's rate */
+/* 128 full-rate frames in and out, as polivoks_fx_process; the host's blocks are cut to 128 by the caller. */
+unsigned polivoks_fx_unit_process(polivoks_fx_t *f, const int32_t *in, int32_t *left, int32_t *right);
+
 void polivoks_fx_reset(void);
 void polivoks_fx_set(unsigned unit, unsigned parameter, unsigned value);
 /* Tempo sync: on, the delay is a note value (0..11: 1/32, 1/16T, 1/16, 1/8T, 1/16., 1/8, 1/4T, 1/8., 1/4, 1/2T, 1/4., 1/2) of the beat; a delay too long

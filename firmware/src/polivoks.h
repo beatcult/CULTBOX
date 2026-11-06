@@ -42,6 +42,7 @@ enum { POLIVOKS_MONO, POLIVOKS_DUO, POLIVOKS_UNISON };   /* UNISON: as Mono (the
 typedef struct polivoks_bank polivoks_bank_t;
 size_t polivoks_bank_size(void);
 void polivoks_bank_init(polivoks_bank_t *b);
+void polivoks_bank_set_rate(polivoks_bank_t *b, float sample_rate);   /* default 44100 (the FM-1); a plugin sets its host's, after init */
 void polivoks_bank_panic(polivoks_bank_t *b);              /* silence now, keep parameters */
 /* velocity 0 is note-off. The instrument has no velocity: any note-on plays at one level. cents: -100..100. */
 void polivoks_bank_note(polivoks_bank_t *b, unsigned note, unsigned velocity, int cents);
