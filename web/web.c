@@ -76,7 +76,7 @@ WEB_EXPORT("web_btn") void web_btn(uint32_t id, uint32_t down)   /* the buttons,
 {
     if (id > 13u) return;
     if (down) { host_edges |= 1u << id; fm1_in.buttons |= 1u << id; }
-    else { host_rel |= 1u << id; fm1_in.buttons &= ~(1u << id); }
+    else if (fm1_in.buttons >> id & 1u) { host_rel |= 1u << id; fm1_in.buttons &= ~(1u << id); }   /* (a release of a button that was not down is nothing) */
 }
 WEB_EXPORT("web_enc") void web_enc(uint32_t id, int32_t n)       /* encoder id turned n detents (+ = clockwise) */
 {

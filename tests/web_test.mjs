@@ -36,4 +36,8 @@ x.web_enc(2, 3); run(44100 / 4);                // knob 1
 check('a dial turn changes the screen', fbHash() !== h1);
 x.web_midi(0x90, 69, 100); const m = run(44100 / 4);
 check('MIDI note on sounds', m.pk > 0.05, 'peak ' + m.pk.toFixed(3));
+x.web_btn(12, 0); run(44100 / 4);               // a release with no press (the page lost focus): PLAY must not toggle
+const led = (x.web_leds() >>> 12) & 1;
+x.web_btn(12, 0); run(44100 / 4);
+check('a release with no press does nothing', ((x.web_leds() >>> 12) & 1) === led);
 process.exit(bad ? 1 : 0);

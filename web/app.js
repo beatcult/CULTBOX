@@ -61,7 +61,12 @@
 
   // ---- buttons
   const btnEls = {};
-  function btnPress(id, d) { send({ t: 'btn', id, d }); if (btnEls[id]) btnEls[id].classList.toggle('down', !!d); }
+  const pressed = new Set();                    // the buttons held now: a release with no press (a window switch) must not reach the firmware
+  function btnPress(id, d) {
+    if (!!d === pressed.has(id)) return;
+    if (d) pressed.add(id); else pressed.delete(id);
+    send({ t: 'btn', id, d }); if (btnEls[id]) btnEls[id].classList.toggle('down', !!d);
+  }
   BTN.forEach(([name, id], n) => {
     if (n === 12) { const s = document.createElement('span'); s.className = 'gap'; $('btns').appendChild(s); }
     const b = document.createElement('button');
@@ -115,7 +120,7 @@
     if (c === '[' || c === ']') { btnPress(c === '[' ? 0 : 1, 0); return; }
     for (const h of [c, e.key]) if (h in held && typeof held[h] === 'number') { keyUp(held[h]); delete held[h]; }
   });
-  addEventListener('blur', () => { [...down].forEach(keyUp); [0, 1, 12].forEach((i) => btnPress(i, 0)); });
+  addEventListener('blur', () => { [...down].forEach(keyUp); [...pressed].forEach((i) => btnPress(i, 0)); });
 
   // ---- LEDs from the firmware: buttons 0..13 and the keys
   function leds(l) {
