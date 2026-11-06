@@ -1,5 +1,3 @@
-<p align="center"><img src="assets/sleepr.svg" width="96" alt="CULTBOX"></p>
-
 # CULTBOX
 
 **A three-channel filth machine for the M-VAVE FM-1.** Drums, a Polivoks-style synth and a dub siren, each with its own
