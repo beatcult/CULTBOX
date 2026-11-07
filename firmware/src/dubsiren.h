@@ -17,7 +17,9 @@ enum {
 enum { SIREN_SWEEP_FILTER, SIREN_SWEEP_FILTER_TUNE };
 #define DUBSIREN_BANK_BYTES 256
 typedef struct dubsiren_bank dubsiren_bank_t;
+void dubsiren_tables_init(void);               /* the LFO tables, built once (dubsiren_init does it too; a plugin does it at load, before any thread runs) */
 void dubsiren_init(dubsiren_bank_t *b);
+void dubsiren_set_rate(dubsiren_bank_t *b, float sample_rate);   /* default 44100 (the FM-1); a plugin sets its host's, after init */
 void dubsiren_panic(dubsiren_bank_t *b);
 void dubsiren_note(dubsiren_bank_t *b, unsigned note, unsigned velocity);   /* velocity 0: off */
 void dubsiren_vintage(dubsiren_bank_t *b, unsigned amount);   /* 0..127: the pitch and filter wander */
