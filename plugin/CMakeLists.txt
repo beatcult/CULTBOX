@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-only
-# CULTBOX PLVKS as a CLAP plugin (the firmware's Polivoks voice and BBD echo, from ../firmware/src).
+# CULTBOX engines as CLAP plugins (the firmware's own voices and BBD echo, from ../firmware/src):
+#   cultbox-plvks.clap       the Polivoks voice
+#   cultbox-dubmarine.clap   the dub siren
 #   cmake -S plugin -B build/plugin [-DCLAP_INCLUDE_DIR=/path/to/clap/include] && cmake --build build/plugin
-# -> build/plugin/cultbox-plvks.clap. Without CLAP_INCLUDE_DIR the CLAP headers (MIT) are fetched from GitHub (tag 1.2.2).
+# Without CLAP_INCLUDE_DIR the CLAP headers (MIT) are fetched from GitHub (tag 1.2.2).
 # Needs a C11 compiler: GCC or Clang (Linux, macOS, MinGW), not MSVC.
 cmake_minimum_required(VERSION 3.16)
-project(cultbox_plvks C)
+project(cultbox_plugins C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_VISIBILITY_PRESET hidden)
@@ -21,9 +23,17 @@ if(NOT CLAP_INCLUDE_DIR)
 endif()
 
 set(FW ${CMAKE_CURRENT_SOURCE_DIR}/../firmware/src)
-add_library(cultbox-plvks MODULE clap/cultbox_plvks.c ${FW}/polivoks.c ${FW}/polivoks_fx.c)
-target_include_directories(cultbox-plvks PRIVATE ${FW} ${CLAP_INCLUDE_DIR})
-target_compile_definitions(cultbox-plvks PRIVATE POLIVOKS_FX_NO_LEGACY)
-target_compile_options(cultbox-plvks PRIVATE -Wall -Wextra -Wno-unused-function)
-target_link_libraries(cultbox-plvks PRIVATE m)
-set_target_properties(cultbox-plvks PROPERTIES PREFIX "" SUFFIX ".clap")
+
+# one plugin: the shared wrapper, an engine file, and the firmware sources that engine needs
+function(cultbox_plugin target engine_file)
+    add_library(${target} MODULE clap/cultbox_clap.c clap/${engine_file} ${FW}/polivoks_fx.c ${ARGN})
+    target_include_directories(${target} PRIVATE clap ${FW} ${CLAP_INCLUDE_DIR})
+    # CULTBOX_REENTRANT: scratch on the stack, so instances may render on different threads at once
+    target_compile_definitions(${target} PRIVATE POLIVOKS_FX_NO_LEGACY CULTBOX_REENTRANT)
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wno-unused-function)
+    target_link_libraries(${target} PRIVATE m)
+    set_target_properties(${target} PROPERTIES PREFIX "" SUFFIX ".clap")
+endfunction()
+
+cultbox_plugin(cultbox-plvks plvks.c ${FW}/polivoks.c)
+cultbox_plugin(cultbox-dubmarine dubmarine.c ${FW}/dubsiren.c)

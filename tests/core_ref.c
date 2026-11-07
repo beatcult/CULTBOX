@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* Regression fingerprint of the PLVKS voice and the BBD echo at the firmware's own 44.1 kHz, through the original
+/* Regression fingerprint of the PLVKS voice, the DUBMARINE siren and the BBD echo at the firmware's own 44.1 kHz, through the original
  * (global) API only. It prints one hash per scenario; the plugin core must print the same lines as the firmware did
  * (tests/core_check.sh compares a build of main with the working tree).
  *   cc -O1 -o core_ref tests/core_ref.c && ./core_ref */
@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include "../firmware/src/polivoks.c"
 #include "../firmware/src/polivoks_fx.c"
+#include "../firmware/src/dubsiren.c"
 
 static uint32_t storage[POLIVOKS_BANK_BYTES / 4];
 static polivoks_bank_t *B = (polivoks_bank_t *)storage;
@@ -63,6 +64,53 @@ static void voice(void)
     report("extremes: pulses, top note");
 }
 
+
+static uint32_t sstorage[DUBSIREN_BANK_BYTES / 4];
+static dubsiren_bank_t *S = (dubsiren_bank_t *)sstorage;
+static void sblocks(int n)
+{
+    int32_t out[DUBSIREN_FRAMES];
+    for (int k = 0; k < n; ++k) {
+        for (int i = 0; i < DUBSIREN_FRAMES; ++i) out[i] = 0;
+        dubsiren_render(S, out);
+        for (int i = 0; i < DUBSIREN_FRAMES; ++i) mix(out[i]);
+    }
+}
+static void siren(void)
+{
+    char name[48];
+    h = 1469598103934665603ull;
+    dubsiren_init(S); dubsiren_note(S, 60, 100); sblocks(300); dubsiren_note(S, 60, 0); sblocks(800);
+    report("siren default key");
+
+    for (unsigned shape = 0; shape < 8; ++shape) {
+        dubsiren_init(S); dubsiren_set(S, SIREN_SHAPE, shape); dubsiren_set(S, SIREN_DEPTH, 100); dubsiren_set(S, SIREN_RATE, 70);
+        dubsiren_note(S, 57, 100); sblocks(400); dubsiren_note(S, 57, 0); sblocks(200);
+        snprintf(name, sizeof name, "siren LFO shape %u", shape);
+        report(name);
+    }
+
+    dubsiren_init(S); dubsiren_set(S, SIREN_SWEEP, 127); dubsiren_set(S, SIREN_SWEEPMODE, SIREN_SWEEP_FILTER); dubsiren_set(S, SIREN_RESO, 100);
+    dubsiren_note(S, 48, 100); sblocks(400);
+    report("siren sweep up, filter");
+    dubsiren_init(S); dubsiren_set(S, SIREN_SWEEP, 0); dubsiren_set(S, SIREN_SWEEPMODE, SIREN_SWEEP_FILTER_TUNE); dubsiren_set(S, SIREN_DEPTH, 20);
+    dubsiren_note(S, 64, 100); sblocks(400);
+    report("siren sweep down, filter + tune");
+
+    dubsiren_init(S); dubsiren_set(S, SIREN_GLIDE, 90); dubsiren_bend(S, 2 << 16); dubsiren_mod(S, 100);
+    dubsiren_note(S, 48, 100); sblocks(200); dubsiren_note(S, 67, 100); sblocks(500); dubsiren_note(S, 67, 0); sblocks(300);
+    dubsiren_note(S, 48, 0); sblocks(600);
+    report("siren glide, bend, wheel, legato");
+
+    dubsiren_init(S); dubsiren_set(S, SIREN_HOLD, 1); dubsiren_set(S, SIREN_DECAY, 100); dubsiren_vintage(S, 127);
+    sblocks(900); dubsiren_set(S, SIREN_HOLD, 0); sblocks(1500);
+    report("siren hold, long decay, vintage");
+
+    dubsiren_init(S); dubsiren_set(S, SIREN_TUNE, 127); dubsiren_set(S, SIREN_RATE, 127); dubsiren_set(S, SIREN_RESO, 127);
+    dubsiren_set(S, SIREN_CUTOFF, 0); dubsiren_set(S, SIREN_VOLUME, 127); dubsiren_set(S, SIREN_DEPTH, 127); dubsiren_note(S, 100, 127); sblocks(300);
+    report("siren extremes");
+}
+
 static void echo(void)
 {
     int32_t in[POLIVOKS_FRAMES], l[POLIVOKS_FRAMES], r[POLIVOKS_FRAMES];
@@ -99,6 +147,7 @@ static void echo(void)
 int main(void)
 {
     voice();
+    siren();
     echo();
     return 0;
 }

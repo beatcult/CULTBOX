@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* The plugin core at other sample rates: PLVKS keeps its pitch and its times, the echo keeps its delay in milliseconds,
+/* The plugin core at other sample rates: PLVKS and DUBMARINE keep their pitch and their times, the echo keeps its delay in milliseconds,
  * and two echoes share nothing.   cc -O1 -o core_rate_test tests/core_rate_test.c -lm && ./core_rate_test */
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include "../firmware/src/polivoks.c"
 #include "../firmware/src/polivoks_fx.c"
+#include "../firmware/src/dubsiren.c"
 
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL "); printf(__VA_ARGS__); printf("\n"); fails++; } else { printf("ok   "); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -86,6 +87,72 @@ static double echo_ms(float sr, unsigned time_pot, int16_t **bufp)
     return best * 1000.0 / sr;
 }
 
+/* ---- DUBMARINE ---- */
+static dubsiren_bank_t *siren_new(float sr, uint32_t *storage)
+{
+    dubsiren_bank_t *b = (dubsiren_bank_t *)storage;
+    dubsiren_init(b); dubsiren_set_rate(b, sr);
+    return b;
+}
+static double siren_pitch_hz(float sr)               /* a saw, no LFO, the filter open: the zero crossings */
+{
+    uint32_t st[DUBSIREN_BANK_BYTES / 4];
+    dubsiren_bank_t *b = siren_new(sr, st);
+    int32_t out[DUBSIREN_FRAMES];
+    long n = 0, zc = 0; double prev = 0;
+    dubsiren_set(b, SIREN_DEPTH, 0); dubsiren_set(b, SIREN_CUTOFF, 127); dubsiren_set(b, SIREN_RESO, 0); dubsiren_set(b, SIREN_SWEEP, 64);
+    dubsiren_note(b, 60, 100);
+    int blocks = (int)(sr * 1.5f / DUBSIREN_FRAMES);
+    for (int k = 0; k < blocks; ++k) {
+        for (int i = 0; i < DUBSIREN_FRAMES; ++i) out[i] = 0;
+        dubsiren_render(b, out);
+        if (k < blocks / 3) continue;
+        for (int i = 0; i < DUBSIREN_FRAMES; ++i) { double v = out[i]; if ((v >= 0) != (prev >= 0)) ++zc; prev = v; ++n; }
+    }
+    return zc / 2.0 / (n / (double)sr);
+}
+static double siren_lfo_hz(float sr)                 /* the LFO's wraps over five seconds */
+{
+    uint32_t st[DUBSIREN_BANK_BYTES / 4];
+    dubsiren_bank_t *b = siren_new(sr, st);
+    int32_t out[DUBSIREN_FRAMES];
+    int wraps = 0; float prev = 0.0f;
+    dubsiren_note(b, 60, 100);
+    int blocks = (int)(sr * 5.0f / DUBSIREN_FRAMES);
+    for (int k = 0; k < blocks; ++k) {
+        for (int i = 0; i < DUBSIREN_FRAMES; ++i) out[i] = 0;
+        dubsiren_render(b, out);
+        if (b->lfo_ph < prev) ++wraps;
+        prev = b->lfo_ph;
+    }
+    return wraps / (blocks * (double)DUBSIREN_FRAMES / sr);
+}
+static double siren_release_ms(float sr)             /* from the key up to idle */
+{
+    uint32_t st[DUBSIREN_BANK_BYTES / 4];
+    dubsiren_bank_t *b = siren_new(sr, st);
+    int32_t out[DUBSIREN_FRAMES];
+    long t = 0;
+    dubsiren_note(b, 60, 100);
+    for (int k = 0; k < (int)(sr * 0.5f / DUBSIREN_FRAMES); ++k) { for (int i = 0; i < DUBSIREN_FRAMES; ++i) out[i] = 0; dubsiren_render(b, out); }
+    dubsiren_note(b, 60, 0);
+    while (b->active && t < (long)(sr * 20.0f)) { for (int i = 0; i < DUBSIREN_FRAMES; ++i) out[i] = 0; dubsiren_render(b, out); t += DUBSIREN_FRAMES; }
+    return t * 1000.0 / sr;
+}
+static double siren_glide_ms(float sr)               /* 24 semitones, until within one */
+{
+    uint32_t st[DUBSIREN_BANK_BYTES / 4];
+    dubsiren_bank_t *b = siren_new(sr, st);
+    int32_t out[DUBSIREN_FRAMES];
+    long t = 0;
+    dubsiren_set(b, SIREN_GLIDE, 100);
+    dubsiren_note(b, 48, 100);
+    for (int k = 0; k < 8; ++k) { for (int i = 0; i < DUBSIREN_FRAMES; ++i) out[i] = 0; dubsiren_render(b, out); }
+    dubsiren_note(b, 72, 100);
+    while (fabsf(b->target - b->semis) > 1.0f && t < (long)(sr * 20.0f)) { for (int i = 0; i < DUBSIREN_FRAMES; ++i) out[i] = 0; dubsiren_render(b, out); t += DUBSIREN_FRAMES; }
+    return t * 1000.0 / sr;
+}
+
 int main(void)
 {
     for (unsigned i = 0; i < sizeof RATES / sizeof *RATES; ++i) {
@@ -96,6 +163,17 @@ int main(void)
     for (unsigned i = 1; i < sizeof RATES / sizeof *RATES; ++i) {
         double r = release_ms(RATES[i]);
         CHECK(fabs(r / r0 - 1.0) < 0.06, "PLVKS release at %.0f Hz lasts %.0f ms (44.1 kHz: %.0f ms)", RATES[i], r, r0);
+    }
+    {
+        double expect = 30.0 * pow(2.0, 57.0 / 127.0 * 8.2288), lfo = 0.1 * pow(2.0, 84.0 / 127.0 * 8.4512);
+        double rel0 = siren_release_ms(44100.0f), gl0 = siren_glide_ms(44100.0f);
+        for (unsigned i = 0; i < sizeof RATES / sizeof *RATES; ++i) {
+            double hz = siren_pitch_hz(RATES[i]), lf = siren_lfo_hz(RATES[i]), r = siren_release_ms(RATES[i]), g = siren_glide_ms(RATES[i]);
+            CHECK(fabs(hz / expect - 1.0) < 0.02, "DUBMARINE at %.0f Hz sample rate plays %.1f Hz (Tune %.1f Hz)", RATES[i], hz, expect);
+            CHECK(fabs(lf / lfo - 1.0) < 0.05, "DUBMARINE's LFO at %.0f Hz runs at %.2f Hz (should be %.2f)", RATES[i], lf, lfo);
+            CHECK(fabs(r / rel0 - 1.0) < 0.03, "DUBMARINE's release at %.0f Hz lasts %.0f ms (44.1 kHz: %.0f ms)", RATES[i], r, rel0);
+            CHECK(fabs(g / gl0 - 1.0) < 0.03, "DUBMARINE's glide at %.0f Hz takes %.0f ms (44.1 kHz: %.0f ms)", RATES[i], g, gl0);
+        }
     }
     for (unsigned t = 0; t < 2; ++t) {
         unsigned pot = t ? 100 : 48;

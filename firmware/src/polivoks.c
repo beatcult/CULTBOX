@@ -290,7 +290,11 @@ unsigned polivoks_bank_render(polivoks_bank_t *b, int32_t *out)
     const float wheel = b->wheel * (1.0f / 127.0f) * 1.5f;               /* mod wheel: vibrato and filter wobble */
     const float bend = (float)b->bend * (1.0f / 65536.0f);
     const float bias_sat = sat(b->bias), fm = b->fm;
+#ifdef CULTBOX_REENTRANT
+    float acc[POLIVOKS_FRAMES];          /* a plugin: instances render on any thread, so the scratch is on the stack */
+#else
     static float acc[POLIVOKS_FRAMES];   /* audio interrupt only: kept off its stack */
+#endif
     for (unsigned i = 0; i < POLIVOKS_FRAMES; ++i) acc[i] = 0.0f;
 
     for (unsigned c = 0; c < POLIVOKS_FRAMES / CHUNK; ++c) {

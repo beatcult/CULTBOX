@@ -1,14 +1,18 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* A small CLAP host for cultbox-plvks.clap: loads the plugin the way a DAW does and checks what a DAW relies on.
- *   cc -O1 -I<clap>/include -I../../firmware/src -o clap_host_test plugin/test/clap_host_test.c -ldl -lm
+/* A small CLAP host for the CULTBOX plugins (cultbox-plvks.clap, cultbox-dubmarine.clap): loads one the way a DAW does and checks
+ * what a DAW relies on. The same checks run on either; the engine's own (its value names, its samples against the firmware's) follow
+ * from the plugin's id.
+ *   cc -O1 -I<clap>/include -I../../firmware/src -o clap_host_test plugin/test/clap_host_test.c -ldl -lm -lpthread
  *   ./clap_host_test build/plugin/cultbox-plvks.clap */
 #include <dlfcn.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <clap/clap.h>
-#include "polivoks.c"      /* the same voice, called directly, to compare the plugin with */
+#include "polivoks.c"      /* the same voices, called directly, to compare the plugins with */
+#include "dubsiren.c"
 
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL "); printf(__VA_ARGS__); printf("\n"); fails++; } else { printf("ok   "); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -83,15 +87,37 @@ static int64_t sbuf_write(const clap_ostream_t *o, const void *b, uint64_t n) { 
 static int64_t sbuf_read(const clap_istream_t *i, void *b, uint64_t n) { sbuf_t *x = (sbuf_t *)i->ctx; if (x->r + n > x->n) n = x->n - x->r; memcpy(b, x->d + x->r, n); x->r += n; return (int64_t)n; }
 
 static const clap_plugin_factory_t *factory;
+static const char *plugin_id;
+static int is_dub;                                  /* DUBMARINE, else PLVKS */
+static unsigned NP;                                 /* the engine's own parameters; the echo's and the output's follow */
+#define X_TIME (NP + 0)
+#define X_FEED (NP + 1)
+#define X_TONE (NP + 2)
+#define X_MIX (NP + 3)
+#define X_SYNC (NP + 4)
+#define X_NOTE (NP + 5)
+#define X_VINTAGE (NP + 6)
+#define X_LEVEL (NP + 7)
+static unsigned CUTOFF, SHAPE_OR_WAVE;              /* two of the engine's own, to move */
 static const clap_plugin_t *make(double sr)
 {
-    const clap_plugin_t *p = factory->create_plugin(factory, &HOST, "com.beatcult.cultbox.plvks");
+    const clap_plugin_t *p = factory->create_plugin(factory, &HOST, plugin_id);
     if (!p || !p->init(p) || !p->activate(p, sr, 1, 4096) || !p->start_processing(p)) { printf("could not make the plugin\n"); exit(2); }
     return p;
 }
 static void destroy_plugin(const clap_plugin_t *p) { p->stop_processing(p); p->deactivate(p); p->destroy(p); }
 static double rms(const float *x, uint32_t a, uint32_t b) { double e = 0; for (uint32_t i = a; i < b; ++i) e += (double)x[i] * x[i]; return sqrt(e / (b - a)); }
 static int finite_all(const float *x, uint32_t n) { for (uint32_t i = 0; i < n; ++i) if (!isfinite(x[i]) || fabsf(x[i]) > 4.0f) return 0; return 1; }
+
+/* two instances rendering at the same moment on two threads, as a DAW does: each must sound as it does alone */
+typedef struct { const clap_plugin_t *pl; const act_t *s; int ns; uint32_t total; float *L, *R; } job_t;
+static void *job_run(void *arg)
+{
+    job_t *j = (job_t *)arg;
+    static const uint32_t b128_[] = {128};
+    render(j->pl, j->s, j->ns, j->total, b128_, 1, 120, j->L, j->R);
+    return 0;
+}
 
 #define N 96000u
 static float A[2][N], B[2][N], C[2][N];
@@ -103,7 +129,7 @@ int main(int argc, char **argv)
     const clap_plugin_t *p, *q;
     const clap_plugin_params_t *params;
     uint32_t odd[] = {1, 37, 512, 300, 5, 127, 129, 1000, 64}, b128[] = {128}, big[] = {4096};
-    if (argc < 2) { printf("usage: clap_host_test cultbox-plvks.clap\n"); return 2; }
+    if (argc < 2) { printf("usage: clap_host_test cultbox-plvks.clap | cultbox-dubmarine.clap\n"); return 2; }
     lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (!lib) { printf("dlopen: %s\n", dlerror()); return 2; }
     entry = (const clap_plugin_entry_t *)dlsym(lib, "clap_entry");
@@ -111,7 +137,12 @@ int main(int argc, char **argv)
     if (!entry || !entry->init(argv[1])) return 2;
     factory = (const clap_plugin_factory_t *)entry->get_factory(CLAP_PLUGIN_FACTORY_ID);
     CHECK(factory && factory->get_plugin_count(factory) == 1, "one plugin in the factory");
-    CHECK(!strcmp(factory->get_plugin_descriptor(factory, 0)->id, "com.beatcult.cultbox.plvks"), "descriptor id %s", factory->get_plugin_descriptor(factory, 0)->id);
+    plugin_id = factory->get_plugin_descriptor(factory, 0)->id;
+    is_dub = strstr(plugin_id, "dubmarine") != 0;
+    NP = is_dub ? SIREN_NPARAMS : POLIVOKS_NPARAMS;
+    CUTOFF = is_dub ? SIREN_CUTOFF : POLIVOKS_CUTOFF;
+    SHAPE_OR_WAVE = is_dub ? SIREN_SHAPE : POLIVOKS_WAVE1;
+    CHECK(!strncmp(plugin_id, "com.beatcult.cultbox.", 21) && (is_dub || strstr(plugin_id, "plvks")), "descriptor id %s", plugin_id);
     CHECK(factory->create_plugin(factory, &HOST, "no.such.plugin") == 0, "an unknown id gives no plugin");
 
     /* parameters */
@@ -126,21 +157,29 @@ int main(int argc, char **argv)
             if (!params->get_info(p, i, &in) || !in.name[0] || in.min_value > in.default_value || in.default_value > in.max_value) ++bad;
             else { if (in.id < 256 && seen[in.id]++) ++dup; if (!params->get_value(p, in.id, &v) || v != in.default_value) ++bad; }
         }
-        CHECK(n == 40 && !bad && !dup, "%u parameters, all with a name, a range and their default", n);
-        CHECK(params->value_to_text(p, POLIVOKS_MODE, 1, text, sizeof text) && !strcmp(text, "BP"), "Mode 1 reads \"%s\"", text);
-        CHECK(params->text_to_value(p, POLIVOKS_WAVE1, "Pls 30", &v) && v == 3.0, "\"Pls 30\" is wave 3");
-        CHECK(params->value_to_text(p, 39, -6.0, text, sizeof text) && !strcmp(text, "-6.0 dB"), "Level reads \"%s\"", text);
+        CHECK(n == NP + 8 && !bad && !dup, "%u parameters (the engine's %u, the echo's six, Vintage, Level), all with a name, a range and their default", n, NP);
+        if (is_dub) {
+            CHECK(params->value_to_text(p, SIREN_SHAPE, 4, text, sizeof text) && !strcmp(text, "Warble"), "Shape 4 reads \"%s\"", text);
+            CHECK(params->text_to_value(p, SIREN_SHAPE, "Tri", &v) && v == 3.0, "\"Tri\" is shape 3");
+            CHECK(params->value_to_text(p, SIREN_SWEEPMODE, 1, text, sizeof text) && !strcmp(text, "+Tune"), "SweepTo 1 reads \"%s\"", text);
+            CHECK(params->get_value(p, X_MIX, &v) && v == 50.0, "the echo is on from the start (Mix %.0f)", v);
+        } else {
+            CHECK(params->value_to_text(p, POLIVOKS_MODE, 1, text, sizeof text) && !strcmp(text, "BP"), "Mode 1 reads \"%s\"", text);
+            CHECK(params->text_to_value(p, POLIVOKS_WAVE1, "Pls 30", &v) && v == 3.0, "\"Pls 30\" is wave 3");
+            CHECK(params->get_value(p, X_MIX, &v) && v == 0.0, "the echo is dry from the start (Mix %.0f)", v);
+        }
+        CHECK(params->value_to_text(p, X_LEVEL, -6.0, text, sizeof text) && !strcmp(text, "-6.0 dB"), "Level reads \"%s\"", text);
     }
     CHECK(p->get_extension(p, CLAP_EXT_AUDIO_PORTS) && p->get_extension(p, CLAP_EXT_NOTE_PORTS) && p->get_extension(p, CLAP_EXT_STATE) && p->get_extension(p, CLAP_EXT_TAIL), "audio ports, note ports, state and tail are offered");
     CHECK(((const clap_plugin_tail_t *)p->get_extension(p, CLAP_EXT_TAIL))->get(p) == 480000u, "tail is ten seconds");
 
     /* sound: silence, a note, its release */
     {
-        act_t s[] = {{0, A_ON, 48, 0.8}, {24000, A_OFF, 48, 0}};
+        act_t s[] = {{0, A_PARAM, X_MIX, 0}, {0, A_ON, 48, 0.8}, {24000, A_OFF, 48, 0}};
         render(p, 0, 0, 4800, b128, 1, 120, A[0], A[1]);
         CHECK(rms(A[0], 0, 4800) == 0.0 && rms(A[1], 0, 4800) == 0.0, "no note, no sound");
         destroy_plugin(p); p = make(48000.0);
-        render(p, s, 2, N, b128, 1, 120, A[0], A[1]);
+        render(p, s, 3, N, b128, 1, 120, A[0], A[1]);
         CHECK(finite_all(A[0], N) && finite_all(A[1], N), "a note renders finite, in range");
         CHECK(rms(A[0], 8000, 20000) > 0.02 && rms(A[0], 8000, 20000) < 0.7, "the held note is audible (rms %.3f)", rms(A[0], 8000, 20000));
         CHECK(rms(A[0], 80000, N) < 0.002, "and dies away after note off (rms %.5f)", rms(A[0], 80000, N));
@@ -149,8 +188,8 @@ int main(int argc, char **argv)
 
     /* the host's block size must not matter */
     {
-        act_t s[] = {{0, A_ON, 43, 1.0}, {128 * 20, A_ON, 62, 1.0}, {128 * 60, A_PARAM, POLIVOKS_CUTOFF, 30}, {128 * 100, A_OFF, 43, 0},
-                     {128 * 140, A_PARAM, 32, 80}, {128 * 140, A_PARAM, 35, 100}, {128 * 200, A_OFF, 62, 0}, {128 * 300, A_MIDI, 0xB0 | (1 << 8) | (90 << 16), 0}};
+        act_t s[] = {{0, A_ON, 43, 1.0}, {128 * 20, A_ON, 62, 1.0}, {128 * 60, A_PARAM, CUTOFF, 30}, {128 * 100, A_OFF, 43, 0},
+                     {128 * 140, A_PARAM, X_TIME, 80}, {128 * 140, A_PARAM, X_MIX, 100}, {128 * 200, A_OFF, 62, 0}, {128 * 300, A_MIDI, 0xB0 | (1 << 8) | (90 << 16), 0}};
         destroy_plugin(p); p = make(48000.0);
         render(p, s, 8, N, b128, 1, 120, A[0], A[1]);
         destroy_plugin(p); p = make(48000.0);
@@ -173,30 +212,31 @@ int main(int argc, char **argv)
         CHECK(first >= 256 && first < 270, "a note at frame 200 starts at the next 128-frame boundary (frame %u)", first);
     }
 
-    /* the plugin is the firmware's voice: the same samples as calling it directly at 48 kHz */
+    /* the plugin is the firmware's engine: the same samples as calling it directly at 48 kHz */
     {
-        act_t s[] = {{0, A_ON, 52, 0.9}, {128 * 100, A_OFF, 52, 0}};
+        act_t s[] = {{0, A_PARAM, X_MIX, 0}, {0, A_ON, 52, 0.9}, {128 * 100, A_OFF, 52, 0}};
         uint32_t m = 128 * 300;
-        uint32_t st[POLIVOKS_BANK_BYTES / 4];
+        uint32_t st[(POLIVOKS_BANK_BYTES > DUBSIREN_BANK_BYTES ? POLIVOKS_BANK_BYTES : DUBSIREN_BANK_BYTES) / 4];
         polivoks_bank_t *b = (polivoks_bank_t *)st;
+        dubsiren_bank_t *d = (dubsiren_bank_t *)st;
         int32_t out[POLIVOKS_FRAMES];
         unsigned diff = 0;
         destroy_plugin(p); p = make(48000.0);
-        render(p, s, 2, m, odd, 9, 120, A[0], A[1]);
-        polivoks_bank_init(b); polivoks_bank_set_rate(b, 48000.0f);
-        polivoks_bank_note(b, 52, (unsigned)lrint(0.9 * 127), 0);
+        render(p, s, 3, m, odd, 9, 120, A[0], A[1]);
+        if (is_dub) { dubsiren_init(d); dubsiren_set_rate(d, 48000.0f); dubsiren_note(d, 52, 100); }
+        else { polivoks_bank_init(b); polivoks_bank_set_rate(b, 48000.0f); polivoks_bank_note(b, 52, 100, 0); }
         for (uint32_t k = 0; k < m / 128; ++k) {
-            if (k == 100) polivoks_bank_note(b, 52, 0, 0);
+            if (k == 100) { if (is_dub) dubsiren_note(d, 52, 0); else polivoks_bank_note(b, 52, 0, 0); }
             memset(out, 0, sizeof out);
-            polivoks_bank_render(b, out);
+            if (is_dub) dubsiren_render(d, out); else polivoks_bank_render(b, out);
             for (int i = 0; i < 128; ++i) if (A[0][k * 128 + i] != (float)out[i] * (1.0f / 8388608.0f)) ++diff;
         }
-        CHECK(diff == 0, "the plugin's output is the firmware voice's, sample for sample (%u differences)", diff);
+        CHECK(diff == 0, "the plugin's output is the firmware %s's, sample for sample (%u differences)", is_dub ? "siren" : "voice", diff);
     }
 
     /* echo sync follows the host's tempo */
     {
-        act_t s[] = {{0, A_PARAM, 35, 127}, {0, A_PARAM, 36, 1}, {0, A_PARAM, 37, 5}, {0, A_PARAM, 33, 90}, {0, A_ON, 60, 1.0}, {128 * 8, A_OFF, 60, 0}};
+        act_t s[] = {{0, A_PARAM, X_MIX, 127}, {0, A_PARAM, X_SYNC, 1}, {0, A_PARAM, X_NOTE, 5}, {0, A_PARAM, X_FEED, 90}, {0, A_ON, 60, 1.0}, {128 * 8, A_OFF, 60, 0}};
         destroy_plugin(p); p = make(48000.0);
         render(p, s, 6, 48000, b128, 1, 60, A[0], A[1]);
         destroy_plugin(p); p = make(48000.0);
@@ -206,7 +246,7 @@ int main(int argc, char **argv)
 
     /* state */
     {
-        act_t s[] = {{0, A_PARAM, POLIVOKS_CUTOFF, 33}, {0, A_PARAM, POLIVOKS_WAVE1, 3}, {0, A_PARAM, 35, 99}, {0, A_PARAM, 39, -12.5}, {0, A_PARAM, 36, 1}};
+        act_t s[] = {{0, A_PARAM, CUTOFF, 33}, {0, A_PARAM, SHAPE_OR_WAVE, 3}, {0, A_PARAM, X_MIX, 99}, {0, A_PARAM, X_LEVEL, -12.5}, {0, A_PARAM, X_SYNC, 1}};
         static unsigned char blob[4096];
         sbuf_t ws = {blob, 0, 0};
         clap_ostream_t os; clap_istream_t is;
@@ -217,11 +257,11 @@ int main(int argc, char **argv)
         render(p, s, 5, 1024, b128, 1, 120, A[0], A[1]);
         os.ctx = &ws; os.write = sbuf_write; is.ctx = &ws; is.read = sbuf_read;
         st = (const clap_plugin_state_t *)p->get_extension(p, CLAP_EXT_STATE);
-        CHECK(st->save(p, &os) && ws.n == 8 + 40 * 4, "state saves %zu bytes", ws.n);
+        CHECK(st->save(p, &os) && ws.n == 8 + (NP + 8) * 4, "state saves %zu bytes", ws.n);
         q = make(44100.0);
         CHECK(((const clap_plugin_state_t *)q->get_extension(q, CLAP_EXT_STATE))->load(q, &is), "and loads into a second instance");
-        for (uint32_t i = 0; i < 40; ++i) { ((const clap_plugin_params_t *)p->get_extension(p, CLAP_EXT_PARAMS))->get_value(p, i, &v1); params->get_value(q, i, &v2); same += v1 == v2; }
-        CHECK(same == 40, "all 40 parameters come back the same (%u)", same);
+        for (uint32_t i = 0; i < NP + 8; ++i) { ((const clap_plugin_params_t *)p->get_extension(p, CLAP_EXT_PARAMS))->get_value(p, i, &v1); params->get_value(q, i, &v2); same += v1 == v2; }
+        CHECK(same == NP + 8, "all %u parameters come back the same (%u)", NP + 8, same);
         ws.r = 0; ws.d[0] ^= 0xFF;
         CHECK(!((const clap_plugin_state_t *)q->get_extension(q, CLAP_EXT_STATE))->load(q, &is), "a state with the wrong header is refused");
         ws.d[0] ^= 0xFF; ws.n = 20; ws.r = 0;
@@ -229,23 +269,33 @@ int main(int argc, char **argv)
         /* the loaded instance sounds like the original */
         {
             act_t play[] = {{0, A_ON, 50, 1.0}};
-            ws.n = 8 + 40 * 4; ws.r = 0;
-            destroy_plugin(p); p = make(44100.0);
+            act_t both[6];                                                    /* the same settings by events, and the note, in one go */
+            memcpy(both, s, sizeof s);
+            both[5] = play[0];
+            destroy_plugin(p); p = make(44100.0);                             /* (the saving instance has run on, and its echo wobble with it) */
+            render(p, both, 6, 20000, b128, 1, 120, A[0], A[1]);
+            ws.n = 8 + (NP + 8) * 4; ws.r = 0;
             destroy_plugin(q); q = make(44100.0);
-            CHECK(((const clap_plugin_state_t *)q->get_extension(q, CLAP_EXT_STATE))->load(q, &is), "(a fresh instance takes it before and after activation)");
+            CHECK(((const clap_plugin_state_t *)q->get_extension(q, CLAP_EXT_STATE))->load(q, &is), "(a fresh, active instance takes it)");
             render(q, play, 1, 20000, b128, 1, 120, B[0], B[1]);
-            destroy_plugin(p); p = make(44100.0);
-            ws.r = 0; ((const clap_plugin_state_t *)p->get_extension(p, CLAP_EXT_STATE))->load(p, &is);
+            CHECK(!memcmp(A[0], B[0], 20000 * sizeof(float)) && !memcmp(A[1], B[1], 20000 * sizeof(float)) && rms(B[0], 4000, 20000) > 0.0,
+                  "an instance loaded from the state sounds like one set the same way by hand");
+            destroy_plugin(p);                                                /* and one that takes it before it is activated */
+            p = factory->create_plugin(factory, &HOST, plugin_id);
+            if (!p || !p->init(p)) { printf("could not make the plugin\n"); exit(2); }
+            ws.r = 0;
+            CHECK(((const clap_plugin_state_t *)p->get_extension(p, CLAP_EXT_STATE))->load(p, &is), "(another takes it before activation)");
+            if (!p->activate(p, 44100.0, 1, 4096) || !p->start_processing(p)) { printf("could not activate\n"); exit(2); }
             render(p, play, 1, 20000, b128, 1, 120, C[0], C[1]);
-            CHECK(!memcmp(B[0], C[0], 20000 * sizeof(float)) && rms(B[0], 4000, 20000) > 0.0, "an instance loaded from state sounds the same every time");
+            CHECK(!memcmp(B[0], C[0], 20000 * sizeof(float)), "and sounds the same");
         }
         destroy_plugin(q);
     }
 
     /* two instances in one process share nothing */
     {
-        act_t sa[] = {{0, A_ON, 45, 1.0}, {0, A_PARAM, 35, 100}, {0, A_PARAM, 33, 100}, {128 * 50, A_OFF, 45, 0}};
-        act_t sb[] = {{0, A_ON, 70, 1.0}, {0, A_PARAM, 35, 127}, {0, A_PARAM, 32, 30}};
+        act_t sa[] = {{0, A_ON, 45, 1.0}, {0, A_PARAM, X_MIX, 100}, {0, A_PARAM, X_FEED, 100}, {128 * 50, A_OFF, 45, 0}};
+        act_t sb[] = {{0, A_ON, 70, 1.0}, {0, A_PARAM, X_MIX, 127}, {0, A_PARAM, X_TIME, 30}};
         destroy_plugin(p); p = make(48000.0);
         render(p, sa, 4, 48000, b128, 1, 120, A[0], A[1]);
         destroy_plugin(p); p = make(48000.0); q = make(48000.0);
@@ -261,11 +311,35 @@ int main(int argc, char **argv)
         destroy_plugin(q);
     }
 
+    /* the same, truly at once: two threads, each its own instance */
+    {
+        enum { M = 480000 };
+        static float ra[2][M], rb[2][M], ta[2][M], tb[2][M];
+        act_t sa[] = {{0, A_ON, 45, 1.0}, {0, A_PARAM, X_MIX, 100}, {0, A_PARAM, X_FEED, 100}, {128 * 1500, A_OFF, 45, 0}, {128 * 2000, A_ON, 52, 1.0}};
+        act_t sb[] = {{0, A_ON, 70, 1.0}, {0, A_PARAM, X_MIX, 127}, {0, A_PARAM, X_TIME, 30}, {128 * 1800, A_ON, 64, 1.0}};
+        const clap_plugin_t *pa, *pb;
+        pthread_t th[2];
+        job_t ja, jb;
+        destroy_plugin(p); p = make(48000.0);
+        render(p, sa, 5, M, b128, 1, 120, ra[0], ra[1]);
+        destroy_plugin(p); p = make(48000.0);
+        render(p, sb, 4, M, b128, 1, 120, rb[0], rb[1]);
+        destroy_plugin(p);
+        pa = make(48000.0); pb = make(48000.0);
+        ja = (job_t){pa, sa, 5, M, ta[0], ta[1]}; jb = (job_t){pb, sb, 4, M, tb[0], tb[1]};
+        pthread_create(&th[0], 0, job_run, &ja); pthread_create(&th[1], 0, job_run, &jb);
+        pthread_join(th[0], 0); pthread_join(th[1], 0);
+        CHECK(!memcmp(ra[0], ta[0], sizeof ra[0]) && !memcmp(ra[1], ta[1], sizeof ra[1]) && !memcmp(rb[0], tb[0], sizeof rb[0]) && !memcmp(rb[1], tb[1], sizeof rb[1]),
+              "two instances rendering at the same moment on two threads each sound as they do alone");
+        destroy_plugin(pa); destroy_plugin(pb);
+        p = make(48000.0);
+    }
+
     /* other sample rates and a reset */
     {
         double rates[] = {22050.0, 44100.0, 96000.0, 192000.0};
         for (int i = 0; i < 4; ++i) {
-            act_t s[] = {{0, A_ON, 57, 1.0}, {0, A_PARAM, 35, 90}, {0, A_PARAM, 33, 110}};
+            act_t s[] = {{0, A_ON, 57, 1.0}, {0, A_PARAM, X_MIX, 90}, {0, A_PARAM, X_FEED, 110}};
             uint32_t m = (uint32_t)(rates[i] * 0.5);
             static float big_l[96000], big_r[96000];
             destroy_plugin(p); p = make(rates[i]);
@@ -274,7 +348,7 @@ int main(int argc, char **argv)
         }
         destroy_plugin(p); p = make(48000.0);
         {
-            act_t s[] = {{0, A_ON, 60, 1.0}, {0, A_PARAM, 35, 127}, {0, A_PARAM, 33, 120}, {0, A_PARAM, 34, 120}, {128 * 20, A_OFF, 60, 0}};
+            act_t s[] = {{0, A_ON, 60, 1.0}, {0, A_PARAM, X_MIX, 127}, {0, A_PARAM, X_FEED, 120}, {0, A_PARAM, X_TONE, 120}, {128 * 20, A_OFF, 60, 0}};
             render(p, s, 5, 48000, b128, 1, 120, A[0], A[1]);
             p->reset(p);
             render(p, 0, 0, 4800, b128, 1, 120, B[0], B[1]);

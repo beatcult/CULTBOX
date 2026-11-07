@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* Dub siren. See dubsiren.h. Fixed 44.1 kHz, 128-frame blocks, float DSP, no libc. */
+/* Dub siren. See dubsiren.h. 44.1 kHz unless dubsiren_set_rate says otherwise (a plugin host's rate), 128-frame blocks, float DSP, no libc. */
 #include "dubsiren.h"
 
-#define DS_SR 44100.0f
+#define DS_SR_DEFAULT 44100.0f
 #define DS_CHUNK 16
 #define DS_Q23 8388608.0f
 #define DS_HELD 8
@@ -14,6 +14,7 @@ struct dubsiren_bank {
     float semis, target, bend;                  /* keyboard pitch in semitones from Tune (glided), bend */
     float ph, lfo_ph, env, s1, s2;
     /* derived */
+    float sr, isr;                              /* the sample rate and its inverse (44.1 kHz on the FM-1) */
     float tune, rate, depth, cutoff, k, sweep, glide, rel, level;
     uint8_t shape, tunemode, hold;
     float vint, vd, vc, vtd, vtc;                  /* vintage: the pitch and the filter wander */
@@ -30,7 +31,7 @@ static const fm1_param_t ds_params[SIREN_NPARAMS] = {
     {"Decay", 127, 28, 0}, {"Hold", 1, 0, ds_hold}, {"Glide", 127, 0, 0}, {"Volume", 127, 108, 0}};
 const fm1_param_t *dubsiren_param(int p) { return (unsigned)p < SIREN_NPARAMS ? ds_params + p : 0; }
 
-static float ds_tbl[4][DS_TBL];                 /* the four bank-B shapes: dubmarine's periodic waves, peak 1 */
+static float ds_tbl[4][DS_TBL];                 /* the four bank-B shapes: dubmarine's periodic waves, peak 1 (built once; read-only after) */
 static uint8_t ds_tbl_ready;
 
 static inline float ds_clamp(float x, float a, float b) { return x < a ? a : x > b ? b : x; }
@@ -59,9 +60,9 @@ static inline float ds_sat(float x)
     if (x < -3.0f) return -1.0f;
     return x * (27.0f + x * x) / (27.0f + 9.0f * x * x);
 }
-static inline float ds_warp(float fc)
+static inline float ds_warp(float fc, float isr)
 {
-    float x = 3.14159265f * fc * (1.0f / DS_SR), x2 = x * x;
+    float x = 3.14159265f * fc * isr, x2 = x * x;
     return x * (105.0f - 10.0f * x2) / (105.0f - 45.0f * x2 + x2 * x2);
 }
 static inline float ds_blep(float t, float dt)
@@ -90,10 +91,12 @@ static void ds_make_tables(void)
     }
     ds_tbl_ready = 1;
 }
+void dubsiren_tables_init(void) { if (!ds_tbl_ready) ds_make_tables(); }
 
 static void ds_derive(dubsiren_bank_t *b)
 {
     const uint8_t *p = b->pot;
+    const float DS_SR = b->sr;
     float u;
     b->tune = 30.0f * ds_exp2(p[SIREN_TUNE] * (1.0f / 127.0f) * 8.2288f);            /* 30 Hz .. 9 kHz */
     b->rate = 0.1f * ds_exp2(p[SIREN_RATE] * (1.0f / 127.0f) * 8.4512f);             /* 0.1 .. 35 Hz */
@@ -129,7 +132,16 @@ void dubsiren_init(dubsiren_bank_t *b)
     for (unsigned i = 0; i < sizeof *b; ++i) raw[i] = 0;
     for (unsigned i = 0; i < SIREN_NPARAMS; ++i) b->pot[i] = ds_params[i].def;
     b->rng = 0x1F123BB5u;
-    if (!ds_tbl_ready) ds_make_tables();
+    b->sr = DS_SR_DEFAULT; b->isr = 1.0f / DS_SR_DEFAULT;
+    dubsiren_tables_init();
+    ds_derive(b);
+}
+/* The host's sample rate, 8 kHz .. 192 kHz, after init: the LFO, the pitch, the filter, the glide and the release follow it. (The
+ * vintage wander steps once a 16-sample chunk, so it runs a little faster at higher rates.) */
+void dubsiren_set_rate(dubsiren_bank_t *b, float sample_rate)
+{
+    b->sr = ds_clamp(sample_rate, 8000.0f, 192000.0f);
+    b->isr = 1.0f / b->sr;
     ds_derive(b);
 }
 void dubsiren_panic(dubsiren_bank_t *b) { b->nheld = 0; b->gate = 0; b->active = 0; b->env = 0.0f; b->s1 = b->s2 = 0.0f; }
@@ -160,7 +172,12 @@ void dubsiren_mod(dubsiren_bank_t *b, unsigned v) { b->wheel = (uint8_t)(v > 127
 unsigned dubsiren_render(dubsiren_bank_t *b, int32_t *out)
 {
     if (!b->active) return 0;
+#ifdef CULTBOX_REENTRANT
+    float acc[DUBSIREN_FRAMES];                 /* a plugin: instances render on any thread, so the scratch is on the stack */
+#else
     static float acc[DUBSIREN_FRAMES];
+#endif
+    const float DS_SR = b->sr;
     float env = b->env;
     for (unsigned c = 0; c < DUBSIREN_FRAMES / DS_CHUNK; ++c) {
         /* the LFO */
@@ -189,9 +206,9 @@ unsigned dubsiren_render(dubsiren_bank_t *b, int32_t *out)
         }
         float oct = (b->semis + b->bend + (b->tunemode ? b->sweep : 0.0f)) * (1.0f / 12.0f) + lfo * depth * 2.0f + vpit;
         float f = ds_clamp(b->tune * ds_exp2(oct), 20.0f, 12000.0f);
-        float inc = f * (1.0f / DS_SR);
+        float inc = f * b->isr;
         float fc = ds_clamp(b->cutoff * ds_exp2(b->sweep * 1.5849625f + vcut), 40.0f, 16000.0f);   /* x3 per full sweep */
-        float g = ds_warp(fc), k = b->k, h = 1.0f / (1.0f + k * g + g * g);
+        float g = ds_warp(fc, b->isr), k = b->k, h = 1.0f / (1.0f + k * g + g * g);
         /* the envelope: 5 ms attack, then the gate or an exponential release */
         float e0 = env;
         if (b->gate) { env += (float)DS_CHUNK / (0.005f * DS_SR); if (env > 1.0f) env = 1.0f; }
