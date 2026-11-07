@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-only WITH GPL-3.0-linking-exception */
 /* Formanta Polivoks voice. See polivoks.h.
- * Fixed 44.1 kHz, 128-frame blocks, float DSP, no libc: runs in the audio interrupt. */
+ * 44.1 kHz unless polivoks_bank_set_rate says otherwise (a plugin host's rate), 128-frame blocks, float DSP, no libc: runs in the
+ * audio interrupt. */
 #include "polivoks.h"
 
-#define SR 44100.0f
+#define SR_DEFAULT 44100.0f
 #define CHUNK 16                /* control-rate update interval, in samples */
 #define HELD_MAX 8
 #define Q23 8388608.0f
@@ -11,6 +12,7 @@
 typedef struct { float att, dec, sus, rel; } pv_adsr_t;
 
 struct polivoks_bank {
+    float sr, isr;                       /* the sample rate and its inverse (44.1 kHz on the FM-1) */
     uint8_t pot[POLIVOKS_NPARAMS];
     uint8_t pedal, wheel, nheld, have;
     uint8_t held[HELD_MAX], sustained[HELD_MAX];
@@ -73,10 +75,10 @@ static inline float sat(float x)
     if (x < -3.0f) return -1.0f;
     return x * (27.0f + x * x) / (27.0f + 9.0f * x * x);
 }
-/* tan(pi*fc/SR) for the filter coefficient; Pade, valid to ~fc = 16 kHz. */
-static inline float warp(float fc)
+/* tan(pi*fc/sr) for the filter coefficient; Pade, valid to ~fc = 16 kHz (isr = 1 / sr). */
+static inline float warp(float fc, float isr)
 {
-    float x = 3.14159265f * fc * (1.0f / SR), x2 = x * x;
+    float x = 3.14159265f * fc * isr, x2 = x * x;
     return x * (105.0f - 10.0f * x2) / (105.0f - 45.0f * x2 + x2 * x2);
 }
 static inline float noise(uint32_t *s)
@@ -111,7 +113,7 @@ static float osc(float *phase, float inc, unsigned wave)
 }
 
 /* ---- parameters ---- */
-static void adsr(pv_adsr_t *e, const uint8_t *p)
+static void adsr(pv_adsr_t *e, const uint8_t *p, float SR)
 {
     e->att = 1.0f - pv_exp(-1.0f / (SR * 0.001f * pv_exp2(p[0] * (1.0f / 127.0f) * 12.2f)));
     e->dec = 1.0f - pv_exp(-1.0f / (SR * 0.005f * pv_exp2(p[1] * (1.0f / 127.0f) * 10.2f)));
@@ -121,6 +123,7 @@ static void adsr(pv_adsr_t *e, const uint8_t *p)
 static void derive(polivoks_bank_t *b)
 {
     const uint8_t *p = b->pot;
+    const float SR = b->sr;
     float u;
     b->cutoff = 40.0f * pv_exp2(p[POLIVOKS_CUTOFF] * (1.0f / 127.0f) * 9.0f);
     u = 1.0f - p[POLIVOKS_RESO] * (1.0f / 127.0f);
@@ -133,8 +136,8 @@ static void derive(polivoks_bank_t *b)
     u = p[POLIVOKS_GLIDE] * (1.0f / 127.0f);
     b->glide = u <= 0.0f ? 1.0f : 1.0f - pv_exp(-(float)CHUNK / (SR * 0.002f * pv_exp2(u * 10.0f)));
     b->slide_k = 1.0f - pv_exp(-(float)CHUNK / (SR * 0.06f));            /* a slide: about 60 ms */
-    adsr(&b->amp, p + POLIVOKS_ATTACK);
-    adsr(&b->filt, p + POLIVOKS_FATTACK);
+    adsr(&b->amp, p + POLIVOKS_ATTACK, b->sr);
+    adsr(&b->filt, p + POLIVOKS_FATTACK, b->sr);
     b->lfo_inc = CHUNK * 0.1f * pv_exp2(p[POLIVOKS_LFORATE] * (1.0f / 127.0f) * 9.2f) / SR;   /* 0.1 .. ~60 Hz */
     u = p[POLIVOKS_LFO_OSC1] * (1.0f / 127.0f); b->d1 = u * u * 14.0f;                       /* semitones */
     u = p[POLIVOKS_LFO_OSC2] * (1.0f / 127.0f); b->d2 = u * u * 14.0f;
@@ -195,6 +198,15 @@ void polivoks_bank_init(polivoks_bank_t *b)
     for (size_t i = 0; i < sizeof *b; ++i) raw[i] = 0;
     for (unsigned i = 0; i < POLIVOKS_NPARAMS; ++i) b->pot[i] = parameters[i].def;
     b->rng = 0x2545f491u;
+    b->sr = SR_DEFAULT; b->isr = 1.0f / SR_DEFAULT;
+    derive(b);
+}
+/* The host's sample rate, 8 kHz .. 192 kHz: every time constant, pitch and the filter coefficient follow it. (The slow wander of
+ * the drift and vintage and the noise modulator step once a 16-sample chunk, so they run a little faster at higher rates.) */
+void polivoks_bank_set_rate(polivoks_bank_t *b, float sample_rate)
+{
+    b->sr = clampf(sample_rate, 8000.0f, 192000.0f);
+    b->isr = 1.0f / b->sr;
     derive(b);
 }
 void polivoks_bank_panic(polivoks_bank_t *b)
@@ -278,7 +290,11 @@ unsigned polivoks_bank_render(polivoks_bank_t *b, int32_t *out)
     const float wheel = b->wheel * (1.0f / 127.0f) * 1.5f;               /* mod wheel: vibrato and filter wobble */
     const float bend = (float)b->bend * (1.0f / 65536.0f);
     const float bias_sat = sat(b->bias), fm = b->fm;
+#ifdef CULTBOX_REENTRANT
+    float acc[POLIVOKS_FRAMES];          /* a plugin: instances render on any thread, so the scratch is on the stack */
+#else
     static float acc[POLIVOKS_FRAMES];   /* audio interrupt only: kept off its stack */
+#endif
     for (unsigned i = 0; i < POLIVOKS_FRAMES; ++i) acc[i] = 0.0f;
 
     for (unsigned c = 0; c < POLIVOKS_FRAMES / CHUNK; ++c) {
@@ -313,11 +329,11 @@ unsigned polivoks_bank_render(polivoks_bank_t *b, int32_t *out)
         float du = b->pot[POLIVOKS_VOICES] == POLIVOKS_UNISON ? b->detune * 0.5f : 0.0f;      /* unison: the detune either side of the note */
         float s1 = b->pitch1 + b->ofs1 - du + bend + lfo * (b->d1 + wheel) + b->drift1 * 0.01f + vp1;
         float s2 = b->pitch2 + b->ofs2 + b->detune - du + bend + lfo * (b->d2 + wheel) + b->drift2 * 0.01f + vp2;
-        float inc1 = clampf(8.175799f * pv_exp2(s1 * (1.0f / 12.0f)) * (1.0f / SR), 1e-5f, 0.45f);
-        float inc2 = clampf(8.175799f * pv_exp2(s2 * (1.0f / 12.0f)) * (1.0f / SR), 1e-5f, 0.45f);
+        float inc1 = clampf(8.175799f * pv_exp2(s1 * (1.0f / 12.0f)) * b->isr, 1e-5f, 0.45f);
+        float inc2 = clampf(8.175799f * pv_exp2(s2 * (1.0f / 12.0f)) * b->isr, 1e-5f, 0.45f);
         /* the filter: its cutoff follows its envelope and the modulator, never the keys */
         float fc = b->cutoff * pv_exp2(b->envamt * b->fenv + lfo * (b->df + wheel) + vcut);
-        float g = warp(clampf(fc, 20.0f, 16000.0f)), k = b->k;
+        float g = warp(clampf(fc, 20.0f, 16000.0f), b->isr), k = b->k;
         float h = 1.0f / (1.0f + k * g + g * g);
         float tremolo = 1.0f - b->da * 0.5f * (1.0f + lfo);
         float level = 0.5f * Q23 * 0.95f * b->trim * tremolo;   /* (the overdriven mixer loses level: make it up) */

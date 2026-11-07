@@ -23,6 +23,9 @@ The [user manual](https://cult-box.netlify.app/) (the CULTBOX dossier) is here.
 page (computer keyboard, touch or MIDI): [beatcult.github.io/CULTBOX](https://beatcult.github.io/CULTBOX/). Its source is
 in [web/](web/); `web/build.sh` builds it with clang alone.
 
+**As plugins (early):** PLVKS and DUBMARINE, each with its BBD echo, as CLAP instruments for your DAW, built from the same
+source files as the firmware: [plugin/](plugin/).
+
 ## Install
 
 1. Download **`cultbox.fwsc`** from the [latest release](https://github.com/beatcult/cultbox/releases/latest).
