@@ -52,6 +52,9 @@ jobs:
         shell: bash
         run: find build/w -path '*plugins*' \( -name '*.clap' -o -name '*.vst3' -o -name '*.component' \) -maxdepth 4
 
+      - name: "macOS: both architectures in each binary"
+        if: matrix.name == 'macos'
+        run: for f in build/w/plugins/*/*/Contents/MacOS/* build/w/plugins/*/Contents/MacOS/*; do [ -f "$f" ] && lipo -info "$f"; done
       - name: Package
         shell: bash
         run: |
