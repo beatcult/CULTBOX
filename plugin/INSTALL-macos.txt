@@ -1,0 +1,11 @@
+CULTBOX plugins (macOS, Apple silicon and Intel): PLVKS and DUBMARINE
+Copy:
+  cultbox-*.clap       to ~/Library/Audio/Plug-Ins/CLAP/
+  cultbox-*.vst3       to ~/Library/Audio/Plug-Ins/VST3/
+  cultbox-*.component  to ~/Library/Audio/Plug-Ins/Components/   (Audio Unit; the least tested format)
+
+These builds are not signed or notarised (no Apple Developer account), so macOS blocks them after a download.
+Remove the quarantine flag once, in Terminal, from the folder you unzipped:
+  xattr -cr CULTBOX-plugins
+before copying (or run it on the installed files). If a host still refuses a plugin, open System Settings > Privacy & Security
+and choose "Allow Anyway" for it, then rescan. Instruments; they take notes and MIDI, output stereo.

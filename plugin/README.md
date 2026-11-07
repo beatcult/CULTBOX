@@ -36,6 +36,20 @@ Needs a C11 compiler (GCC or Clang) and CMake. The CLAP headers (MIT) are fetche
 `build/plugin/cultbox-plvks.clap` and `cultbox-dubmarine.clap` go in `~/.clap` (Linux), `~/Library/Audio/Plug-Ins/CLAP` (macOS) or
 `%COMMONPROGRAMFILES%\CLAP` (Windows, with MinGW or clang; not MSVC). Only Linux is tried so far.
 
+## VST3 and Audio Unit
+
+    cmake -S plugin -B build/plugin -DCULTBOX_WRAPPER=ON
+    cmake --build build/plugin --target cultbox-plvks_all cultbox-dubmarine_all
+
+makes CLAP and VST3 (and AUv2 on macOS) through [clap-wrapper](https://github.com/free-audio/clap-wrapper) (MIT), which is fetched at
+configure time together with the VST3 SDK (MIT; and on macOS Apple's AudioUnitSDK); everything lands in `build/plugin/plugins/`.
+Needs a C++17 compiler too (on Windows clang-cl, not MSVC's own cl). The VST3s pass the Steinberg validator (47 tests) on Linux.
+
+**Downloads:** the `plugins` workflow (Actions tab) builds Linux, macOS (Apple silicon + Intel) and Windows zips on every change to
+the plugin; a pushed tag `plugins-v*` also attaches them to a pre-release. Each zip has an `INSTALL.txt`. The Mac builds are **not
+signed or notarised**: after downloading, run `xattr -cr CULTBOX-plugins` once, or allow them in System Settings > Privacy & Security.
+The Windows and macOS builds, and the Audio Unit, are untried in a DAW until someone loads them.
+
 ## Test
 
     sh plugin/test/run.sh

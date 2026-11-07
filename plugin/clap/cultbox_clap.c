@@ -370,7 +370,11 @@ static const clap_plugin_t *fac_create(const clap_plugin_factory_t *f, const cla
     return &p->plugin;
 }
 static const clap_plugin_factory_t factory = {fac_count, fac_desc, fac_create};
-static bool entry_init(const char *path) { (void)path; if (cb_engine.load) cb_engine.load(); return true; }
-static void entry_deinit(void) {}
-static const void *entry_factory(const char *id) { return !strcmp(id, CLAP_PLUGIN_FACTORY_ID) ? &factory : 0; }
-CLAP_EXPORT const clap_plugin_entry_t clap_entry = {CLAP_VERSION_INIT, entry_init, entry_deinit, entry_factory};
+bool cultbox_entry_init(const char *path) { (void)path; if (cb_engine.load) cb_engine.load(); return true; }
+void cultbox_entry_deinit(void) {}
+const void *cultbox_entry_get_factory(const char *id) { return !strcmp(id, CLAP_PLUGIN_FACTORY_ID) ? &factory : 0; }
+#ifndef CULTBOX_CLAP_FIRST
+/* a plain .clap: this is the entry. With -DCULTBOX_CLAP_FIRST (clap-wrapper builds the CLAP, VST3 and AU from these three functions)
+ * plugin/clap/entry.cpp makes it, once for each format. */
+CLAP_EXPORT const clap_plugin_entry_t clap_entry = {CLAP_VERSION_INIT, cultbox_entry_init, cultbox_entry_deinit, cultbox_entry_get_factory};
+#endif
