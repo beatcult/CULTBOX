@@ -35,9 +35,13 @@ set(FW ${CMAKE_CURRENT_SOURCE_DIR}/../firmware/src)
 
 if(CULTBOX_WRAPPER)
     enable_language(CXX)
+    if(APPLE)
+        enable_language(OBJC OBJCXX)                 # the Audio Unit and VST3 wrappers have Objective-C++ parts
+    endif()
     set(CMAKE_CXX_STANDARD 17)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
     if(MSVC)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")   # static runtime everywhere: one kind (clap-wrapper's pieces must agree), and no VC++ redistributable to install
         add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>)
     endif()
     get_filename_component(CLAP_SDK_ROOT "${CLAP_INCLUDE_DIR}/.." ABSOLUTE)      # clap-wrapper wants the SDK's root
