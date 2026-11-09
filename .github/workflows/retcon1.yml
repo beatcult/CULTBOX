@@ -27,7 +27,7 @@ jobs:
           mkdir -p build
           gcc -std=c99 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wdouble-promotion -Werror -DRC_POOL= -o build/engine_test tests/retcon/engine_test.c -lm
           build/engine_test | tail -3
-      - name: Host run (the panel app on a fake FM-1: screens and sound)
+      - name: Host run (the panel app on a fake FM-1, screens and sound)
         run: sh tests/run_host.sh tests/retcon/play.txt | tail -8
       - name: JieLi toolchain
         run: sh tools/get_toolchain.sh
