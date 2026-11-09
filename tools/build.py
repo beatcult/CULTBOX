@@ -56,12 +56,13 @@ SDK_SHA256 = {
 
 BOARD = "fm1"                       # fm1 (default) or smk37: BOARD env or --board
 BOARD_PREFIX = {"fm1": "FM-1_99", "smk37": "SMK-37 Pro_99"}   # SMK-37 identity (not released): prefix + minor (0: a dev build)
-FM1_IDENTITY = "FM-1_333"        # CULTBOX's own package identity on the FM-1 (three digits like the official FM-1_015: M-VAVE's M-UPGRADE refused a six-digit one; 666 is taken); every build and release
+FM1_IDENTITY = "FM-1_334" if os.environ.get("APP") == "retcon1" else "FM-1_333"   # RETCON-1 (APP=retcon1) has its own identity, 334 (not yet checked against M-UPGRADE: change it on a clash). CULTBOX: CULTBOX's own package identity on the FM-1 (three digits like the official FM-1_015: M-VAVE's M-UPGRADE refused a six-digit one; 666 is taken); every build and release
 BOARD_DEFS = {"fm1": [], "smk37": ["-DBOARD_SMK37=1"]}
 MODELS = {"pro": "SMK-37 Pro", "elite": "SMK-37 Elite", "mke": "MKE-P37"}   # smk37: one keyboard, three names
-DATA_FAMILY = "CULTBOX"              # the SMK store's owner tag (store.h): 1..7 of A-Z 0-9. Your fork: your own
-SCREEN_NAME = "CULTBOX"              # the update loader's screen (FM-1, ldr_screen.c): the name and its colour (RGB565)
-SCREEN_COLOUR = 0xEF18              # cream, #ECE2C4
+APP = os.environ.get("APP", "cultbox")   # cultbox (default) or retcon1: firmware/src/<APP>.c and the package <APP>.fwsc
+DATA_FAMILY = "RETCON1" if APP == "retcon1" else "CULTBOX"              # the SMK store's owner tag (store.h): 1..7 of A-Z 0-9. Your fork: your own
+SCREEN_NAME = "RETCON-1" if APP == "retcon1" else "CULTBOX"            # the update loader's screen (FM-1, ldr_screen.c): the name and its colour (RGB565)
+SCREEN_COLOUR = 0xECA8 if APP == "retcon1" else 0xEF18             # cream, #ECE2C4 (RETCON-1: amber, #E89640)
 PRODUCT = FM1_IDENTITY
 VERSION = None                      # APP_VER for release builds
 
@@ -168,7 +169,7 @@ def build_loader():
 
 def build_app():
     flags = [*CFLAGS, *BOARD_DEFS[BOARD], "-Ifirmware/hal", "-Ifirmware/src", "-Ifirmware/gen", f'-DFELUCCA_ID="{PRODUCT}"',
-             f'-DAPP_VER="{VERSION or "0.0"}"', '-DAPP_NAME="CULTBOX"']
+             f'-DAPP_VER="{VERSION or "0.0"}"', f'-DAPP_NAME="{SCREEN_NAME}"']
     if BOARD == "smk37":
         if not re.fullmatch(r"[A-Z0-9]{1,7}", DATA_FAMILY):
             raise SystemExit("DATA_FAMILY: 1..7 of A-Z 0-9")
@@ -177,9 +178,9 @@ def build_app():
     cmds = [("cc", "-c", FW / "crt0.S", "-o", OUT / "crt0.o"),
             ("cc", "-c", FW / "hal" / "fm1_vec.S", "-o", OUT / "fm1_vec.o"),
             ("cc", "-c", FW / "hal" / "fm1_isr.S", "-o", OUT / "fm1_isr.o"),
-            ("cc", *flags, "-c", FW / "src" / "cultbox.c", "-o", OUT / "cultbox.o")]
+            ("cc", *flags, "-c", FW / "src" / f"{APP}.c", "-o", OUT / f"{APP}.o")]
     tc_all(*cmds)
-    elf = OUT / "cultbox.elf"
+    elf = OUT / f"{APP}.elf"
     ld = FW / "app.ld"
     if APP_SLOT != 0x8DFBC:          # another board's app slot (SMK-37): the same script, its XIP length
         txt = ld.read_text()
@@ -188,7 +189,7 @@ def build_app():
         ld = OUT / "app.ld"
         ld.write_text(txt.replace("LENGTH = 0x8DFBC", f"LENGTH = {APP_SLOT:#X}".replace("0X", "0x")))
     tc("pi32v2/bin/ld", "--gc-sections", "-e", "_start", "-T", ld, OUT / "crt0.o", OUT / "fm1_vec.o",
-       OUT / "fm1_isr.o", OUT / "cultbox.o", "-o", elf)
+       OUT / "fm1_isr.o", OUT / f"{APP}.o", "-o", elf)
     for sect in ("text.bin", "data.bin", "ramtext.bin"):
         (OUT / sect).unlink(missing_ok=True)
     *_, syms, dis, rt = tc_all(("common/bin/objcopy", "-O", "binary", "-j", ".text", elf, OUT / "text.bin"),
@@ -197,7 +198,7 @@ def build_app():
                                ("common/bin/objdump", "-t", elf),
                                ("common/bin/objdump", "-d", elf),
                                ("common/bin/objdump", "-d", "-j", ".ram_text", elf))
-    (OUT / "cultbox.dis").write_text(dis)
+    (OUT / f"{APP}.dis").write_text(dis)
 
     def symv(name):
         return int(re.search(r"^([0-9a-f]+) .*\s" + name + r"$", syms, re.M).group(1), 16)
@@ -214,7 +215,7 @@ def build_app():
             img += b"\xff" * (load - APP_XIP - len(img))
             img += blob
     img += b"\xff" * (-len(img) % 4)
-    (OUT / "cultbox.bin").write_bytes(img)
+    (OUT / f"{APP}.bin").write_bytes(img)
     return bytes(img), syms, dis, rt
 
 
@@ -320,7 +321,7 @@ def main():
         BOARD_PREFIX[BOARD] = BOARD_PREFIX[BOARD].replace(MODELS["pro"], MODELS[model])
         suffix += "-" + model
     PRODUCT = FM1_IDENTITY if BOARD == "fm1" else BOARD_PREFIX[BOARD] + "0"
-    name = f"cultbox{suffix}.fwsc"
+    name = f"{APP}{suffix}.fwsc"
     if a.release:                   # one digit each: the identity has room for two (X.Y; a .Z only in the text)
         m = re.fullmatch(r"(\d)\.(\d)(\.\d)?(-[A-Za-z0-9]+)?", a.release)
         if not m:
@@ -328,7 +329,7 @@ def main():
         if BOARD != "fm1":
             PRODUCT = BOARD_PREFIX[BOARD] + m[2]
         VERSION = m[1] + "." + m[2] + (m[3] or "")
-        name = f"cultbox{suffix}.fwsc" if BOARD == "fm1" else f"cultbox-{a.release}{suffix}.fwsc"   # (the FM-1 package keeps one name: .../releases/latest/download/cultbox.fwsc)
+        name = f"{APP}{suffix}.fwsc" if BOARD == "fm1" else f"{APP}-{a.release}{suffix}.fwsc"   # (the FM-1 package keeps one name: .../releases/latest/download/cultbox.fwsc)
     fm1pkg_make.SDK = a.sdk
     for rel, sha in SDK_SHA256.items():          # fail early without the SDK
         if hashlib.sha256(fm1pkg_make.sdk_file(rel)).hexdigest() != sha:
@@ -349,7 +350,7 @@ def main():
         raise SystemExit("build: checks failed")
     pkg = fm1pkg_make.ufw(fm1pkg_make.flash_image(img, fm1pkg_make.KEY), ota, PRODUCT)
     (OUT / name).write_bytes(pkg)
-    print(f"app      {OUT / 'cultbox.bin'}  {len(img)} B")
+    print(f"app      {OUT / f'{APP}.bin'}  {len(img)} B")
     print(f"loader   {LDR / 'ota.bin'}  {len(ota)} B")
     print(f"package  {OUT / name}  {len(pkg)} B, identity {PRODUCT}" + (f", board {BOARD}" if BOARD != "fm1" else ""))
     return 0

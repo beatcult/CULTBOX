@@ -1,0 +1,65 @@
+# RETCON-1: build the FM-1 package (retcon1.fwsc, identity FM-1_334), run the engine test and the host run.
+# Nothing is published on a push: the package is a build artifact. A tag retcon1-vX.Y attaches it to a release.
+name: retcon1
+
+on:
+  push:
+    branches: [retcon-1, main]
+    tags: ['retcon1-v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # the release on a tag
+    env:
+      APP: retcon1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: python3 -m pip install Pillow
+      - name: Engine test (host, C99, warnings as errors)
+        run: |
+          mkdir -p build
+          gcc -std=c99 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wdouble-promotion -Werror -DRC_POOL= -o build/engine_test tests/retcon/engine_test.c -lm
+          build/engine_test | tail -3
+      - name: Host run (the panel app on a fake FM-1: screens and sound)
+        run: sh tests/run_host.sh tests/retcon/play.txt | tail -8
+      - name: JieLi toolchain
+        run: sh tools/get_toolchain.sh
+      - name: JieLi AC79 SDK
+        run: |
+          for i in 1 2 3; do
+            git clone --depth 1 --branch AC79NN_SDK_V1.2.1_2023-12-13 \
+                https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK.git ~/fw-AC79_AIoT_SDK && break
+            rm -rf ~/fw-AC79_AIoT_SDK
+            sleep 20
+          done
+          test -d ~/fw-AC79_AIoT_SDK
+      - name: Build the FM-1 firmware
+        run: |
+          set +e
+          sh build.sh > build.log 2>&1
+          rc=$?
+          msg=$(tail -n 40 build.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          if [ $rc -ne 0 ]; then echo "::error title=build failed::$msg"; exit 1; fi
+          echo "::notice title=build::$msg"
+      - name: Package and loader tests
+        run: |
+          mkdir -p build/host
+          cc -O1 -Wall -Wno-unused-function -o build/host/ota_test tests/ota_test.c
+          build/host/ota_test build/retcon1.fwsc | tail -2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: retcon1
+          path: build/retcon1.fwsc
+          if-no-files-found: error
+      - name: Release (on a tag)
+        if: startsWith(github.ref, 'refs/tags/retcon1-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" build/retcon1.fwsc --title "RETCON-1 ${GITHUB_REF_NAME#retcon1-}" --notes "FM-1 firmware package. Install it with M-VAVE's M-UPGRADE (see docs/RETCON1.md)."

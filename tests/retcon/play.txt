@@ -1,0 +1,19 @@
+# RETCON-1: a chord, the FILT page (cutoff down), the TAPE page, the sequencer (SEQ edit view, PLAY), screens on the way
+100 keys 0x91
+400 shot
+900 btn 6
+950 enc 2 -6
+1000 enc 3 4
+1300 shot
+1600 keys 0
+1700 btn 5
+1750 enc 2 3
+2000 shot
+2200 btn 11
+2300 keys 0x4
+2350 keys 0
+2400 btn 12
+3000 shot
+5000 btn 12
+5500 shot
+6000 end
