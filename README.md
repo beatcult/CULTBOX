@@ -61,3 +61,5 @@ and mixer are CULTBOX's own. [LICENSING.md](LICENSING.md) names who wrote what, 
 CULTBOX is free software under the **GNU General Public License, version 3 only**; the complete source is in this
 repository at every release tag. "M-VAVE", "FM-1" and the other product names belong to their owners; CULTBOX is not
 made or endorsed by them.
+
+You can also try CULTBOX in the browser, no flashing needed, in the free community [FM-1 Emulator](https://fm1-emulator.atst.tools/).
